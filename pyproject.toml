@@ -13,6 +13,13 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Private :: Do Not Upload",
 ]
+dependencies = [
+  "sqlalchemy[asyncio]>=2.0",
+  "asyncpg>=0.29",
+  "alembic>=1.13",
+  "pgvector>=0.3",
+  "pydantic-settings>=2.4",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -20,6 +27,8 @@ dev = [
   "mypy>=1.11",
   "pytest>=8",
   "pytest-cov>=5",
+  "pytest-asyncio>=0.24",
+  "testcontainers[postgres]>=4.8",
   "import-linter>=2",
 ]
 
@@ -31,6 +40,7 @@ packages = ["src/wortlaut"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+extend-exclude = ["migrations"]   # Alembic-Konventionen nicht gegen unsere Lint-Regeln biegen
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "C90", "PLR0913", "PLR0915"]
@@ -45,13 +55,22 @@ max-args = 5                 # R-ARCH-04: max. Parameter
 [tool.mypy]
 python_version = "3.12"
 strict = true
+plugins = ["pydantic.mypy"]
 files = ["src", "tests", "scripts"]
 exclude = ["\\.venv"]
+
+[[tool.mypy.overrides]]
+module = ["pgvector.*", "testcontainers.*"]
+ignore_missing_imports = true
 
 # --- Tests + Coverage (R-TEST-01) ---
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov --cov-report=term-missing --cov-fail-under=80 --strict-markers"
+asyncio_mode = "auto"
+markers = [
+  "integration: Test gegen echte Infrastruktur (Testcontainers, braucht Docker)",
+]
 
 [tool.coverage.run]
 source = ["wortlaut"]
