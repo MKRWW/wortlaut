@@ -38,7 +38,8 @@ async def session_scope(sm: async_sessionmaker[AsyncSession]) -> AsyncIterator[A
   (rohes SQL in Alembic, ab #2) — das ORM ist nur Zugriffs-Ergonomie.
 - **pgvector**: Typ via `pgvector.sqlalchemy.Vector` im ORM-Modell.
 - **Testcontainers** (ADR-0006): Image **digest-gepinnt** (Supply-Chain, R-SEC):
-  `pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb`.
+  `pgvector/pgvector@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb`
+  (repository@digest ohne Tag — sonst pullt docker-py die Digest-Referenz nicht).
   Fixture fährt `alembic upgrade head` im Setup. Unit-Tests starten **keinen** Container.
 
 ## 5. Testbare Akzeptanzkriterien
