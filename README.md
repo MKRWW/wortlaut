@@ -58,6 +58,8 @@ Tag 1 partei- und quellen-agnostisch.
 | [docs/security.md](docs/security.md) | Security- & OpSec-Threat-Model (Adversary-Modell, Prompt Injection, Verteidigungs-Architektur) |
 | [docs/development.md](docs/development.md) | Rollen, agentischer Dev-Loop, Guardrails/Gates, DoR/DoD |
 | [docs/rules.md](docs/rules.md) | **Regelwerk (verbindlich):** Code-Qualität, Security, Tests, DoR/DoD als Regel-IDs |
+| [docs/engineering.md](docs/engineering.md) | **Engineering-Methodik:** Spec-driven, TDD, INVEST, testbare Metriken |
+| [docs/adr/](docs/adr/) | **ADRs** — Tech-Stack, entschieden & begründet |
 
 ## Mitmachen
 

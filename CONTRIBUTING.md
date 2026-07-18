@@ -27,6 +27,8 @@ Es definiert Code-Qualität, Security, Tests, Architektur, DoR und DoD als Regel
 IDs (z. B. `R-SEC-04`). Reviews und PRs verweisen darauf. Was dort **[CI]** markiert
 ist, wird maschinell erzwungen und blockt den Merge. **Bitte zuerst lesen.**
 
+Wie wir bauen (verbindlich): **[docs/engineering.md](docs/engineering.md)** (Spec-driven, TDD, INVEST) und die **[ADRs](docs/adr/)** (entschiedener Tech-Stack).
+
 ## Die nicht verhandelbaren Prinzipien
 
 Ein PR, der eines davon verletzt, wird nicht gemergt — sie sind der Kern des Projekts:

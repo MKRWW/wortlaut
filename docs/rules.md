@@ -55,6 +55,20 @@ Regeln ohne Marker sind ebenso verbindlich, aber (noch) nicht automatisiert prü
   `source`/`span`) und Anti-Halluzination-Gate (Byte-Match). **[CI]**
 - **R-TEST-03** — **Keine Live-Netz-Calls in Unit-Tests** (Fixtures/Mocks). **[REVIEW]**
 - **R-TEST-04** — **Jedes Akzeptanzkriterium hat einen Test.** **[REVIEW]**
+- **R-TEST-05** — **TDD:** kein Produktivcode ohne vorher **fehlschlagenden** Test
+  (red → green → refactor). **[REVIEW]**
+
+## R-PROC — Vorgehen (Spec-driven)
+
+- **R-PROC-01** — **Spec-first:** kein Increment ohne reviewte Increment-Spec
+  (Template in increment-spec).
+  Ändert sich die Absicht, ändert sich zuerst die Spec. **[REVIEW]**
+- **R-PROC-02** — **INVEST:** Stories erfüllen INVEST, bevor sie „ready" sind (Teil DoR). **[REVIEW]**
+- **R-PROC-03** — **Ein Increment = ein PR** (klein). **[REVIEW]**
+- **R-PROC-04** — **Stack-Entscheidungen als ADR** festhalten (siehe `docs/adr/`);
+  eine ADR wird abgelöst, nicht still editiert. **[REVIEW]**
+
+> Methodik-Details (Loop, testbare AC, TDD-Regeln): siehe `docs/engineering.md`.
 
 ## R-SEC — Security
 
