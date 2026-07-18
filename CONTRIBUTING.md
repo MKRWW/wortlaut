@@ -7,9 +7,18 @@ Prüfung, Quellenrecherche, Doku) sind willkommen.
 ## Wo entwickelt wird
 
 - **GitHub ist die Collaboration-Plattform:** Issues, Pull Requests, Diskussion.
-  Fork → Branch → PR wie üblich.
 - Es gibt zusätzlich einen **selbstgehosteten Spiegel** (souveräne Kopie des Codes).
   Für Beiträge musst du dich damit nicht befassen — arbeite ganz normal auf GitHub.
+
+### Branching-Modell (GitFlow)
+
+- **`main`** = stabile/veröffentlichte Stände (Releases, getaggt). **Geschützt.**
+- **`develop`** = Integrationsbranch und **Standard-Ziel für Beiträge**. **Geschützt.**
+- **Feature:** `feature/<kurz>` aus `develop` → PR **gegen `develop`**.
+- **Release:** `release/<version>` aus `develop` → PR nach `main` (+ Tag), zurück in `develop`.
+- **Hotfix:** `hotfix/<kurz>` aus `main` → PR nach `main` **und** `develop`.
+- **Branch Protection ist Pflicht** (beide Branches): kein direkter Push, PR + Review +
+  grüne CI-Gates nötig.
 
 ## Das Regelwerk (verbindlich)
 

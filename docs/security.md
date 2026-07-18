@@ -127,8 +127,12 @@ Feeds genau der Akteure, die es dokumentiert. Der gefährlichste, untypischste V
   - **WORM/Append-only** (Object-Lock) für Rohbytes; **keine** Update/Delete-Pfade.
   - **SHA-256 über Rohbytes** + öffentlich nachrechenbarer `/verify`-Endpoint.
   - **Externe Verankerung:** periodischer **Merkle-Root** des Ledgers wird öffentlich/
-    unabänderlich verankert (signiert veröffentlicht, git-getaggt, optional RFC-3161-
-    Timestamping) → nachträgliche Manipulation wird beweisbar.
+    unabänderlich verankert → nachträgliche Manipulation/Rückdatierung wird beweisbar.
+    Bevorzugt **OpenTimestamps** (ankert nur den *Hash* batch-weise in die Bitcoin-Chain
+    — kostenlos, nur Hashes, kein Datenbyte on-chain, DSGVO-neutral), alternativ
+    RFC-3161-TSA, Sigstore/rekor oder signiert+git-getaggt. **Keine Daten on-chain**
+    (unlöschbar → kollidiert mit Redaction/DSGVO); es werden ausschließlich Hashes
+    verankert.
   - **Redundante Fremdarchive** (Wayback **und** archive.today).
   - **Signierte, unveränderliche Audit-Logs** jeder Redaction/Änderung.
 
