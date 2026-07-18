@@ -102,7 +102,7 @@ jobs:
           fetch-depth: 0
       - name: SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
-        uses: SonarSource/sonarqube-scan-action@v4
+        uses: SonarSource/sonarqube-scan-action@v6
       - name: SonarCloud inaktiv (kein Token)
         if: ${{ env.SONAR_TOKEN == '' }}
         run: echo "SONAR_TOKEN nicht gesetzt - SonarCloud-Gate inaktiv (R-QUAL-04). Setup siehe README/CONTRIBUTING."
