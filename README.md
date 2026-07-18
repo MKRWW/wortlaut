@@ -56,6 +56,7 @@ Tag 1 partei- und quellen-agnostisch.
 | [docs/datamodel.md](docs/datamodel.md) | Vollständiges Schema, Immutability, Anti-Halluzination-Gate, Ingest-Adapter-Interface |
 | [docs/legal.md](docs/legal.md) | Rechtslage (UrhG, DSGVO, KUG), Beweis-Threat-Model, Anwalts-Checkliste |
 | [docs/security.md](docs/security.md) | Security- & OpSec-Threat-Model (Adversary-Modell, Prompt Injection, Verteidigungs-Architektur) |
+| [docs/development.md](docs/development.md) | Rollen, agentischer Dev-Loop, Guardrails/Gates, DoR/DoD |
 
 ## Mitmachen
 

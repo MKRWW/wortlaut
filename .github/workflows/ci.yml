@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Hard Gates (siehe docs/development.md §3). Aktivieren sich, sobald Phase-0-Code
+# existiert (pyproject.toml / src/). Bis dahin laufen sie no-op grün durch.
+
+jobs:
+  quality:
+    name: Lint · Type · Test · Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        run: |
+          if [ -f pyproject.toml ] || [ -d src ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-python@v5
+        if: steps.detect.outputs.code == 'true'
+        with:
+          python-version: "3.12"
+      - name: Install
+        if: steps.detect.outputs.code == 'true'
+        run: pip install -e ".[dev]" || pip install ruff mypy pytest pytest-cov
+      - name: Lint (ruff)
+        if: steps.detect.outputs.code == 'true'
+        run: ruff check .
+      - name: Format (ruff)
+        if: steps.detect.outputs.code == 'true'
+        run: ruff format --check .
+      - name: Typecheck (mypy)
+        if: steps.detect.outputs.code == 'true'
+        run: mypy .
+      - name: Tests + Coverage (>=80%)
+        if: steps.detect.outputs.code == 'true'
+        run: pytest --cov --cov-report=term-missing --cov-fail-under=80
+      - name: Kein Code (Skeleton)
+        if: steps.detect.outputs.code != 'true'
+        run: echo "Kein Code — Gates aktivieren sich mit Phase 0."
+
+  security:
+    name: Security-Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret-Scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+      - id: detect
+        run: |
+          if [ -f pyproject.toml ] || [ -d src ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-python@v5
+        if: steps.detect.outputs.code == 'true'
+        with:
+          python-version: "3.12"
+      - name: SAST + Dependency-Audit (Start: advisory)
+        if: steps.detect.outputs.code == 'true'
+        run: |
+          pip install bandit pip-audit semgrep
+          bandit -r src -q || true
+          pip-audit || true
+          semgrep --config auto || true
+      - name: wortlaut-Prinzip-Gate (kein LLM-Output im Serving-Layer)
+        run: python scripts/check_no_llm_output.py
+
+  architecture:
+    name: Architektur-Fitness (Layering)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        run: |
+          if [ -f .importlinter ] || [ -f setup.cfg ] || [ -f pyproject.toml ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-python@v5
+        if: steps.detect.outputs.code == 'true'
+        with:
+          python-version: "3.12"
+      - name: import-linter (Adapter → Kern verboten)
+        if: steps.detect.outputs.code == 'true'
+        run: |
+          pip install import-linter
+          if [ -f .importlinter ] || grep -q "importlinter" pyproject.toml 2>/dev/null; then lint-imports; else echo "import-linter-Contracts folgen mit Phase 0."; fi
+      - name: Kein Code (Skeleton)
+        if: steps.detect.outputs.code != 'true'
+        run: echo "Kein Code — Architektur-Gate aktiviert sich mit Phase 0."

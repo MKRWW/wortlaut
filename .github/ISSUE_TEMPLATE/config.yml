@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🔒 Sicherheitslücke melden
+    url: https://github.com/MKRWW/wortlaut/security/advisories/new
+    about: >
+      Sicherheitslücken bitte NICHT als öffentliches Issue. Nutze den privaten
+      Security-Advisory-Meldeweg (verantwortungsvolle Offenlegung).
