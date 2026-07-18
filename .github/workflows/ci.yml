@@ -50,6 +50,8 @@ jobs:
           fetch-depth: 0
       - name: Secret-Scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - id: detect
         run: |
           if [ -f pyproject.toml ] || [ -d src ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
@@ -82,7 +84,7 @@ jobs:
       - name: import-linter (Adapter → Kern verboten)
         if: steps.detect.outputs.code == 'true'
         run: |
-          pip install import-linter
+          pip install -e ".[dev]"
           if [ -f .importlinter ] || grep -q "importlinter" pyproject.toml 2>/dev/null; then lint-imports; else echo "import-linter-Contracts folgen mit Phase 0."; fi
       - name: Kein Code (Skeleton)
         if: steps.detect.outputs.code != 'true'
@@ -99,6 +101,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@v5
+        if: ${{ env.SONAR_TOKEN != '' }}
+        with:
+          python-version: "3.12"
+      - name: Coverage-Report für SonarCloud
+        if: ${{ env.SONAR_TOKEN != '' }}
+        run: |
+          pip install -e ".[dev]"
+          pytest --cov-report=xml
       - name: SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
