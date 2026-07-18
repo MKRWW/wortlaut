@@ -57,7 +57,7 @@ jobs:
         if: steps.detect.outputs.code == 'true'
         with:
           python-version: "3.12"
-      - name: SAST + Dependency-Audit (Start: advisory)
+      - name: "SAST + Dependency-Audit (Start advisory)"
         if: steps.detect.outputs.code == 'true'
         run: |
           pip install bandit pip-audit semgrep
