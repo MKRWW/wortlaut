@@ -6,8 +6,9 @@ on:
   push:
     branches: [main, develop]
 
-# Hard Gates (siehe docs/development.md §3). Aktivieren sich, sobald Phase-0-Code
-# existiert (pyproject.toml / src/). Bis dahin laufen sie no-op grün durch.
+# Hard Gates (docs/development.md §3, docs/rules.md). Alles via uv (ADR-0002).
+# Integrationstests laufen gegen echte Postgres/pgvector via Testcontainers
+# (Docker-Daemon auf dem Runner vorhanden).
 
 jobs:
   quality:
@@ -15,31 +16,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - id: detect
-        run: |
-          if [ -f pyproject.toml ] || [ -d src ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-python@v6
-        if: steps.detect.outputs.code == 'true'
         with:
           python-version: "3.12"
-      - name: Install
-        if: steps.detect.outputs.code == 'true'
-        run: pip install -e ".[dev]" || pip install ruff mypy pytest pytest-cov
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (reproduzierbar, uv.lock)
+        run: uv sync --frozen --extra dev
       - name: Lint (ruff)
-        if: steps.detect.outputs.code == 'true'
-        run: ruff check .
+        run: uv run ruff check .
       - name: Format (ruff)
-        if: steps.detect.outputs.code == 'true'
-        run: ruff format --check .
+        run: uv run ruff format --check .
       - name: Typecheck (mypy)
-        if: steps.detect.outputs.code == 'true'
-        run: mypy .
-      - name: Tests + Coverage (>=80%)
-        if: steps.detect.outputs.code == 'true'
-        run: pytest --cov --cov-report=term-missing --cov-fail-under=80
-      - name: Kein Code (Skeleton)
-        if: steps.detect.outputs.code != 'true'
-        run: echo "Kein Code — Gates aktivieren sich mit Phase 0."
+        run: uv run mypy
+      - name: Tests + Coverage (>=80%, inkl. Integration via Testcontainers)
+        run: uv run pytest --cov-report=xml
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
 
   security:
     name: Security-Gate
@@ -52,64 +51,53 @@ jobs:
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - id: detect
-        run: |
-          if [ -f pyproject.toml ] || [ -d src ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-python@v6
-        if: steps.detect.outputs.code == 'true'
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --frozen --extra dev
       - name: "SAST + Dependency-Audit (Start advisory)"
-        if: steps.detect.outputs.code == 'true'
         run: |
-          pip install bandit pip-audit semgrep
-          bandit -r src -q || true
-          pip-audit || true
-          semgrep --config auto || true
+          uvx bandit -r src -q || true
+          uvx pip-audit || true
+          uvx semgrep --config auto || true
       - name: wortlaut-Prinzip-Gate (kein LLM-Output im Serving-Layer)
-        run: python scripts/check_no_llm_output.py
+        run: uv run python scripts/check_no_llm_output.py
 
   architecture:
     name: Architektur-Fitness (Layering)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - id: detect
-        run: |
-          if [ -f .importlinter ] || [ -f setup.cfg ] || [ -f pyproject.toml ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-python@v6
-        if: steps.detect.outputs.code == 'true'
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --frozen --extra dev
       - name: import-linter (Adapter → Kern verboten)
-        if: steps.detect.outputs.code == 'true'
-        run: |
-          pip install -e ".[dev]"
-          if [ -f .importlinter ] || grep -q "importlinter" pyproject.toml 2>/dev/null; then lint-imports; else echo "import-linter-Contracts folgen mit Phase 0."; fi
-      - name: Kein Code (Skeleton)
-        if: steps.detect.outputs.code != 'true'
-        run: echo "Kein Code — Architektur-Gate aktiviert sich mit Phase 0."
+        run: uv run lint-imports
 
   sonarcloud:
     name: SonarCloud (Code-Qualität)
     runs-on: ubuntu-latest
-    # Aktiviert sich automatisch, sobald das Repo-Secret SONAR_TOKEN gesetzt ist.
-    # Setup: docs/development.md / README. Läuft nicht für Fork-PRs (kein Secret).
+    needs: quality
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v6
+      - name: Download coverage
         if: ${{ env.SONAR_TOKEN != '' }}
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
-      - name: Coverage-Report für SonarCloud
-        if: ${{ env.SONAR_TOKEN != '' }}
-        run: |
-          pip install -e ".[dev]"
-          pytest --cov-report=xml
+          name: coverage
       - name: SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
