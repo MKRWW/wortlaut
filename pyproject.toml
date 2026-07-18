@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wortlaut"
+version = "0.0.0"
+description = "Archiv des öffentlichen Wortes von Mandatsträgern — wörtliche, quellenbelegte Zitate."
+requires-python = ">=3.12"
+readme = "README.md"
+classifiers = [
+  "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+  "Programming Language :: Python :: 3.12",
+  "Private :: Do Not Upload",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "pytest>=8",
+  "pytest-cov>=5",
+  "import-linter>=2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wortlaut"]
+
+# --- Lint & Format (ruff) — u.a. Gott-Klassen-Limits (R-ARCH-04) ---
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C90", "PLR0913", "PLR0915"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15          # R-ARCH-04: zyklomatische Komplexität
+
+[tool.ruff.lint.pylint]
+max-args = 5                 # R-ARCH-04: max. Parameter
+
+# --- Typecheck (mypy strict, R-QUAL-02) ---
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests", "scripts"]
+exclude = ["\\.venv"]
+
+# --- Tests + Coverage (R-TEST-01) ---
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+source = ["wortlaut"]

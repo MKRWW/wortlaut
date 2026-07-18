@@ -1,0 +1,16 @@
+[importlinter]
+root_package = wortlaut
+
+# R-ARCH-02: Abhängigkeiten zeigen nach innen. Der Kern (ingest/evidence/store/
+# retrieval) darf den Serving-/Output-Layer NIE importieren. Verhindert u.a., dass
+# LLM-/Ausgabe-Logik in den Beweis-Kern sickert.
+[importlinter:contract:core-unabhaengig-von-serving]
+name = Kern importiert nicht den Serving-Layer
+type = forbidden
+source_modules =
+    wortlaut.ingest
+    wortlaut.evidence
+    wortlaut.store
+    wortlaut.retrieval
+forbidden_modules =
+    wortlaut.serving

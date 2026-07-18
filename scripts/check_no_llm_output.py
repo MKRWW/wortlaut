@@ -8,7 +8,9 @@ dem ersten Serving-Code). Details: docs/security.md §3.3, docs/architecture.md 
 
 Exit 0 = ok, Exit 1 = Verstoß.
 """
+
 from __future__ import annotations
+
 import pathlib
 import re
 import sys
@@ -20,11 +22,12 @@ SERVING_GLOBS = ["src/**/serving/**/*.py", "src/**/api/**/*.py", "**/serving/**/
 FORBIDDEN = [
     r"\.chat\.completions\.create",
     r"\.completions\.create",
-    r"\.messages\.create",          # Anthropic
-    r"\.generate\s*\(",             # generische Generierung
+    r"\.messages\.create",  # Anthropic
+    r"\.generate\s*\(",  # generische Generierung
     r"openai\.(ChatCompletion|Completion)",
     r"\bllm\.(generate|complete|chat)\b",
 ]
+
 
 def main() -> int:
     root = pathlib.Path(".")
@@ -44,14 +47,14 @@ def main() -> int:
                     violations.append(f"{f}:{lineno}: {line.strip()}")
 
     if violations:
-        print("VERSTOSS: LLM-Textgenerierung im Serving-Layer verboten "
-              "(Prinzip 'kein summarize'):")
+        print("VERSTOSS: LLM-Textgenerierung im Serving-Layer verboten (Prinzip 'kein summarize'):")
         for v in violations:
             print("  " + v)
         return 1
 
     print(f"OK: {len(files)} Serving-Datei(en) geprüft, kein LLM-Freitext.")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
