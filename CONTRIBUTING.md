@@ -11,6 +11,13 @@ Prüfung, Quellenrecherche, Doku) sind willkommen.
 - Es gibt zusätzlich einen **selbstgehosteten Spiegel** (souveräne Kopie des Codes).
   Für Beiträge musst du dich damit nicht befassen — arbeite ganz normal auf GitHub.
 
+## Das Regelwerk (verbindlich)
+
+Die **Grundlage zum Mitmachen** ist das Regelwerk: **[docs/rules.md](docs/rules.md)**.
+Es definiert Code-Qualität, Security, Tests, Architektur, DoR und DoD als Regeln mit
+IDs (z. B. `R-SEC-04`). Reviews und PRs verweisen darauf. Was dort **[CI]** markiert
+ist, wird maschinell erzwungen und blockt den Merge. **Bitte zuerst lesen.**
+
 ## Die nicht verhandelbaren Prinzipien
 
 Ein PR, der eines davon verletzt, wird nicht gemergt — sie sind der Kern des Projekts:
