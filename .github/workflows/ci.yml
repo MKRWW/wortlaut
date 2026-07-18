@@ -95,14 +95,15 @@ jobs:
     # Setup: docs/development.md / README. Läuft nicht für Fork-PRs (kein Secret).
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      SONAR_HOST_URL: https://sonarcloud.io
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: SonarCloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
-        uses: SonarSource/sonarqube-scan-action@v4
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       - name: SonarCloud inaktiv (kein Token)
         if: ${{ env.SONAR_TOKEN == '' }}
         run: echo "SONAR_TOKEN nicht gesetzt - SonarCloud-Gate inaktiv (R-QUAL-04). Setup siehe README/CONTRIBUTING."
