@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   push:
-    branches: [main]
+    branches: [main, develop]
 
 # Hard Gates (siehe docs/development.md §3). Aktivieren sich, sobald Phase-0-Code
 # existiert (pyproject.toml / src/). Bis dahin laufen sie no-op grün durch.
