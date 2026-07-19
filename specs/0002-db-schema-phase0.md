@@ -1,6 +1,6 @@
 # Increment-Spec: DB-Schema Phase 0 — `ingest_adapter` + `source` + Immutability (#2)
 
-- **Story/Issue:** #2 · **Status:** Draft · **Phase/Layer:** phase/0 · `store`
+- **Story/Issue:** #2 · **Status:** Reviewed · **Phase/Layer:** phase/0 · `store`
 - Methodik: [../docs/engineering.md](../docs/engineering.md) · Regeln: [../docs/rules.md](../docs/rules.md)
 - Baut auf **#16** (Persistenz-Fundament: async ORM-`Base`, Alembic-async, Testcontainers).
 
@@ -29,7 +29,8 @@ migrations/versions/0002_*.py   # down_revision = "0001" (pgvector-Extension aus
 1. `CREATE TYPE source_type … / rights_basis … / trust_level …`   (§2, nur diese drei)
 2. `CREATE TABLE ingest_adapter (…)`                              (§3.1, PK `(name, version)`)
 3. `CREATE TABLE source (…)` inkl. FK `(adapter_name, adapter_version)→ingest_adapter`,
-   `content_hash char(64) UNIQUE`, `CONSTRAINT chk_archive`, `rights_basis NOT NULL`  (§3.2)
+   `content_hash char(64) UNIQUE`, `CONSTRAINT chk_archive`, `CONSTRAINT chk_rights`,
+   `rights_basis NOT NULL`  (§3.2 verbatim)
 4. `CREATE FUNCTION forbid_mutation()` + Trigger `trg_source_immutable`
    `BEFORE UPDATE OR DELETE ON source` (§4); analog `trg_ingest_adapter_immutable`
    auf `ingest_adapter` (dort in §0/§3.1 als „immutabel je Version" deklariert).
@@ -128,7 +129,9 @@ class Source(Base):
 - **Downgrade-Reihenfolge:** Trigger vor Tabellen, Enums zuletzt droppen (sonst „type is used"). Von AC9 abgedeckt.
 - **`gen_random_uuid()`**: Core in PG16 (Digest-gepinntes `pgvector/pgvector`-Image aus #16 ist PG16) — kein `pgcrypto` nötig; falls Image-Basis <13, wäre Extension nötig (nicht der Fall).
 - **Trigger auf `ingest_adapter`** geht über datamodel §4 (nur `source`/`span` gelistet) hinaus, folgt aber §0/§3.1 („immutabel je Version"). Bewusste, konservative Härtung; per AC8 getestet.
-- `chk_rights`-CHECK aus §3.2 ist ein No-op (`… OR true`) — als Doku/Platzhalter mitnehmen oder weglassen? **Vorschlag:** weglassen (das echte Gate ist App-seitig), um kein irreführendes Constraint zu schaffen. **→ Review-Entscheidung.**
+- `chk_rights`-CHECK aus §3.2 ist ein No-op (`… OR true`). **Entscheidung (Stakeholder): bleibt drin** —
+  konservativ, datamodel §3.2 **verbatim**, als Doku-Platzhalter fürs spätere App-seitige Rechte-Gate.
+  Nicht sinnvoll testbar (passt immer), daher **kein eigenes AC** — nur Bestandteil von AC1 (Objekt existiert).
 
 ## 9. Definition of Done (Verweis)
 [../docs/rules.md](../docs/rules.md) DoD: alle AC grün (inkl. Integration-Job), alle Gates grün
