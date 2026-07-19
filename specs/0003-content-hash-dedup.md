@@ -1,6 +1,6 @@
 # Increment-Spec: Content-Hash + Dedup (#3)
 
-- **Story/Issue:** #3 · **Status:** Draft · **Phase/Layer:** phase/0 · `evidence` (+ `store`)
+- **Story/Issue:** #3 · **Status:** Reviewed · **Phase/Layer:** phase/0 · `evidence` (+ `store`)
 - Methodik: [../docs/engineering.md](../docs/engineering.md) · Regeln: [../docs/rules.md](../docs/rules.md)
 - Baut auf **#2** (Schema mit `source.content_hash char(64) UNIQUE`).
 
@@ -14,14 +14,19 @@ zweites Verarbeiten derselben Bytes vermieden wird (README §2, architecture §2
 - **Keine** Ingest-Pipeline / kein `fetch`/`normalize`/`insert` (das ist #6/#7).
 - **Kein** Fremdarchiv, **kein** WORM-Storage (#4/#5).
 - **Kein** Span-/Text-Hash (`span_hash` kommt mit dem Span-Increment).
-- **Kein** AI, kein Streaming großer Dateien (bewusst später, s. §8), keine API.
+- **Kein** AI, keine API, **kein** `fetch`/Netz-I/O. (Streaming bezieht sich nur auf die
+  Hash-*Berechnung* über einen Chunk-Iterator, nicht auf das Holen der Quelle.)
 - `evidence` bleibt **rein** (importiert keinen wortlaut-Layer); der Dedup-Check ist DB-Sache → `store`.
 
 ## 3. Betroffene Interfaces / Öffentliche Signaturen
 ```python
 # src/wortlaut/evidence/hashing.py   (REIN: keine wortlaut-Imports, keine I/O)
 def content_hash(raw: bytes) -> str:
-    """SHA-256 über die Rohbytes, als 64-stelliger lowercase-Hex-String (= source.content_hash)."""
+    """SHA-256 über die Rohbytes, 64-stelliger lowercase-Hex (= source.content_hash). In-Memory."""
+
+def content_hash_stream(chunks: Iterable[bytes]) -> str:
+    """Wie content_hash, aber inkrementell über einen Chunk-Iterator (große Quellen, kein Voll-RAM).
+    Invariante: content_hash(b) == content_hash_stream(<beliebige Aufteilung von b in Chunks>)."""
 
 # src/wortlaut/store/sources.py   (DB-Query gegen die source-Tabelle aus #2)
 async def source_exists(session: AsyncSession, content_hash: str) -> bool:
@@ -38,6 +43,9 @@ async def source_exists(session: AsyncSession, content_hash: str) -> bool:
   ⇒ gleicher Hash, immer), damit der Hash gegen einen öffentlichen Wert nachrechenbar ist.
 - **Rohbytes ≠ Text:** bewusst über die unveränderten Bytes, nicht über `normalized_text` — sonst
   wäre der Anker von Parsing/Encoding abhängig und nicht mehr gegen die Quelle prüfbar.
+- **Streaming (D2):** `content_hash_stream` aktualisiert `hashlib.sha256` chunkweise (`h.update(chunk)`),
+  lädt die Quelle nie ganz in den RAM. Byte-Identität ⇒ Hash-Identität zur In-Memory-Variante;
+  `content_hash(b)` ≡ `content_hash_stream((b,))`. Die Äquivalenz sichert AC7.
 - **Race:** Zwei gleichzeitige Ingests derselben Bytes → `source_exists` kann bei beiden `False`
   liefern; der zweite Insert scheitert dann am **UNIQUE** (#2). Das ist korrekt so — die DB ist die
   Wahrheit, der Vorab-Check nur Effizienz. (Das saubere Abfangen im Insert-Pfad ist #7.)
@@ -53,11 +61,14 @@ async def source_exists(session: AsyncSession, content_hash: str) -> bool:
 - [ ] **AC5** *Given* frische DB, *When* `source_exists(unbekannter_hash)`, *Then* `False`. `[integration]`
 - [ ] **AC6** *Given* eine `source` mit `content_hash = H` (eingefügt), *When* `source_exists(H)`,
       *Then* `True` (Duplikat erkannt). `[integration]`
+- [ ] **AC7** *Given* dieselben Bytes einmal ganz und einmal in beliebige Chunks zerlegt, *Then*
+      `content_hash(b) == content_hash_stream(chunks)` (Streaming-Äquivalenz). `[unit]`
 
 ## 6. Testplan (Test-zu-AC-Mapping)
 - **Unit (rein, kein Container):** `tests/unit/test_hashing.py`
   - `test_known_vector` → AC1 · `test_deterministic` → AC2 · `test_rawbytes_not_text` → AC3
   - `test_hex64_lowercase` → AC4 (+ Rand: `b""`, große/binäre Bytes)
+  - `test_stream_equivalence` → AC7 (`b` in mehrere Chunks zerlegt ⇒ gleicher Hash wie ganz)
 - **Integration (Testcontainers Postgres, Harness aus #16/#2):** `tests/integration/test_source_dedup.py`
   - `test_source_exists_false_for_unknown` → AC5
   - `test_source_exists_true_after_insert` → AC6 (Adapter+Source einfügen wie in #2, dann prüfen)
@@ -68,13 +79,14 @@ async def source_exists(session: AsyncSession, content_hash: str) -> bool:
 - **Dedup** strukturell durch DB-UNIQUE (#2); `source_exists` nur Vorabcheck.
 - `evidence` bleibt rein/I/O-frei — keine Secrets, keine Netz-/DB-Kopplung im Hashing.
 
-## 8. Risiken & offene Fragen
-- **Streaming/Speicher:** `content_hash(raw: bytes)` lädt die ganze Quelle in den Speicher. Für den
-  MVP (Parlaments-Drucksachen/Protokolle, klein) unkritisch; eine chunked/Streaming-Variante ist
-  bewusst **verschoben** (→ Design-Entscheidung D2).
-- **Scope `source_exists`:** gehört der Dedup-Vorabcheck schon in #3 (in `store`) oder ganz in die
-  Pipeline #7? (→ Design-Entscheidung D1.)
-- **`store/sources.py`-Ort:** einfache Modulfunktion vs. Repository-Klasse — Start: schlichte Funktion.
+## 8. Entscheidungen & Risiken
+- **D1 (entschieden: ja):** Der Dedup-Vorabcheck `store.source_exists` ist Teil von #3. Harte
+  Garantie bleibt der DB-UNIQUE aus #2; `source_exists` ist nur Effizienz.
+- **D2 (entschieden: Streaming jetzt):** `content_hash_stream(chunks)` chunked; In-Memory-
+  `content_hash(bytes)` bleibt als Bequemlichkeit. Äquivalenz per AC7 gesichert.
+- **`store/sources.py`-Ort:** schlichte Modulfunktion (kein Repository-Overhead) — Start so.
+- **Race bei Parallel-Ingest:** `source_exists` kann False/False liefern; zweiter Insert scheitert am
+  UNIQUE (#2). Bewusst so — sauberes Abfangen im Insert-Pfad ist #7.
 
 ## 9. Definition of Done (Verweis)
 [../docs/rules.md](../docs/rules.md) DoD: alle AC grün (Unit + Integration), alle Gates grün
