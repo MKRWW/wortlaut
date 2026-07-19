@@ -16,7 +16,7 @@ def test_ingest_adapter_mapping() -> None:
         "description",
         "created_at",
     }
-    assert {c.name for c in IngestAdapter.__table__.primary_key.columns} == {"name", "version"}
+    assert {c.name for c in IngestAdapter.__table__.primary_key} == {"name", "version"}
 
 
 def test_source_mapping() -> None:
