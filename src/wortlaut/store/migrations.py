@@ -26,3 +26,8 @@ def _config(dsn: str) -> Config:
 async def upgrade_head(dsn: str) -> None:
     """Fährt alle Migrationen bis ``head`` gegen ``dsn``."""
     await asyncio.to_thread(command.upgrade, _config(dsn), "head")
+
+
+async def downgrade_to(dsn: str, revision: str) -> None:
+    """Fährt Migrationen bis ``revision`` zurück (Reversibilitätstest, AC9 #2)."""
+    await asyncio.to_thread(command.downgrade, _config(dsn), revision)

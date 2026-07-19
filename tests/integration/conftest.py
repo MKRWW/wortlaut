@@ -24,6 +24,16 @@ def pg_dsn() -> Iterator[str]:
 
 
 @pytest.fixture
+def fresh_pg_dsn() -> Iterator[str]:
+    """Ein eigener, frischer Container je Test — für schema-mutierende Tests
+    (z.B. Downgrade, AC9 #2), damit sie die session-geteilte DB nicht stören."""
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer(PG_IMAGE, driver="asyncpg") as pg:
+        yield pg.get_connection_url()
+
+
+@pytest.fixture
 async def db_engine(pg_dsn: str) -> AsyncIterator[AsyncEngine]:
     from wortlaut.store.db import create_async_engine_from
     from wortlaut.store.settings import DbSettings
