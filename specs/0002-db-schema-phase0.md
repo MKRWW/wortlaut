@@ -37,6 +37,10 @@ migrations/versions/0002_*.py   # down_revision = "0001" (pgvector-Extension aus
 `downgrade()`: Trigger → Tabellen → Function → Enum-Typen (umgekehrte Reihenfolge).
 > `gen_random_uuid()` ist in PostgreSQL 16 Core (keine Extension nötig).
 
+Zusätzlich: `src/wortlaut/store/migrations.py` bekommt einen Helfer
+`downgrade_to(dsn, revision)` (spiegelt `upgrade_head` via `command.downgrade` im Worker-Thread) —
+nur für den AC9-Reversibilitätstest.
+
 ### 3b. ORM-Modelle (nur Lese-/Schreib-Ergonomie, keine Business-Logik)
 ```python
 # src/wortlaut/store/models.py   (nutzt Base aus #16 store/db.py; R-ARCH-02: store importiert keinen Layer)
