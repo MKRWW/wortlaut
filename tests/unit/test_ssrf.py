@@ -81,8 +81,6 @@ def test_public_url_allowed() -> None:
 
 def test_allowlist_host_not_in_list_blocked() -> None:
     """Host nicht in allow_hosts → SsrfBlocked (noch vor DNS)."""
+    allow_hosts = frozenset({"allowed.example.com"})
     with pytest.raises(SsrfBlocked):
-        assert_url_allowed(
-            "http://not-allowed.example.com/x",
-            allow_hosts=frozenset({"allowed.example.com"}),
-        )
+        assert_url_allowed("http://not-allowed.example.com/x", allow_hosts=allow_hosts)
