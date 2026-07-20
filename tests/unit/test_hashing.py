@@ -12,9 +12,10 @@ def test_known_vector() -> None:
 
 
 def test_deterministic() -> None:
-    # AC2: gleiche Bytes -> gleicher Hash
+    # AC2: zwei unabhängig konstruierte, inhaltsgleiche Byte-Folgen -> gleicher Hash
     data = b"wortlaut ist deterministisch"
-    assert content_hash(data) == content_hash(data)
+    same_content = b"wortlaut ist " + b"deterministisch"
+    assert content_hash(data) == content_hash(same_content)
 
 
 def test_rawbytes_not_text() -> None:
