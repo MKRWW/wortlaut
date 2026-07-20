@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from wortlaut.archive.pinned import pinned_client
 from wortlaut.archive.ssrf import assert_url_allowed
 
 logger = logging.getLogger(__name__)
@@ -54,10 +55,7 @@ class WaybackArchiver:
 
     def _client_or_create(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                follow_redirects=False,
-                timeout=httpx.Timeout(30.0),
-            )
+            self._client = pinned_client(WAYBACK_HOST)
         return self._client
 
     async def archive(self, origin_url: str) -> str:
@@ -111,10 +109,7 @@ class ArchiveTodayArchiver:
 
     def _client_or_create(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                follow_redirects=False,
-                timeout=httpx.Timeout(30.0),
-            )
+            self._client = pinned_client(ARCHIVE_TODAY_HOST)
         return self._client
 
     async def archive(self, origin_url: str) -> str:

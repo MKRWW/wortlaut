@@ -14,10 +14,11 @@ class SsrfBlocked(Exception):
     """URL wurde durch SSRF-Schutz blockiert (interne IP, verbotenes Schema, Allowlist)."""
 
 
-def assert_url_allowed(url: str, *, allow_hosts: frozenset[str] | None = None) -> None:
-    """Wirft SsrfBlocked, wenn url auf private/loopback/link-local/ULA/Metadata-IP
-    (169.254.169.254) auflöst, ein Nicht-http(s)-Schema hat, oder (falls allow_hosts
-    gesetzt) der Host nicht in der Allowlist ist. DNS wird aufgelöst und geprüft.
+def resolve_and_check(url: str, *, allow_hosts: frozenset[str] | None = None) -> list[str]:
+    """Prüft die URL (Schema/Host/Allowlist), löst DNS auf und validiert JEDE IP.
+
+    Liefert die validierten IP-Strings (Reihenfolge wie aufgelöst) für IP-Pinning
+    (#36). Wirft SsrfBlocked wie bisher; fail closed, wenn keine IP prüfbar war.
     """
     parsed = urlparse(url)
 
@@ -44,21 +45,29 @@ def assert_url_allowed(url: str, *, allow_hosts: frozenset[str] | None = None) -
 
     # 5) Jede aufgelöste Adresse prüfen — fail closed: mindestens eine IP muss geprüft sein
     checked = 0
+    seen: set[str] = set()
+    valid_ips: list[str] = []
     for _, _, _, _, sock_addr in addrinfos:
-        ip_str = sock_addr[0]
+        ip_str = str(sock_addr[0])
         try:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
             continue
         checked += 1
-        if (
-            addr.is_private
-            or addr.is_loopback
-            or addr.is_link_local
-            or addr.is_reserved
-            or addr.is_multicast
-            or addr.is_unspecified
-        ):
-            raise SsrfBlocked(f"hostname '{hostname}' resolves to blocked IP {ip_str}")
+        # is_global deckt ab: private, loopback, link-local, reserved, multicast,
+        # unspecified UND CGNAT 100.64.0.0/10 — ein einzelner Treffer reicht zum Block.
+        if not addr.is_global:
+            raise SsrfBlocked(f"hostname '{hostname}' resolves to non-global IP {ip_str}")
+        if ip_str not in seen:
+            seen.add(ip_str)
+            valid_ips.append(ip_str)
+
     if checked == 0:
         raise SsrfBlocked(f"no checkable IP address for '{hostname}' — fail closed")
+
+    return valid_ips
+
+
+def assert_url_allowed(url: str, *, allow_hosts: frozenset[str] | None = None) -> None:
+    """Wie resolve_and_check, verwirft aber das Ergebnis (reiner Guard)."""
+    resolve_and_check(url, allow_hosts=allow_hosts)

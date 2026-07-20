@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from wortlaut.archive.ssrf import SsrfBlocked, assert_url_allowed
+from wortlaut.archive.ssrf import SsrfBlocked, assert_url_allowed, resolve_and_check
 
 # ── AC3: Interne IPs / verbotene Schemata blockieren ────────────────────
 
@@ -21,6 +21,7 @@ from wortlaut.archive.ssrf import SsrfBlocked, assert_url_allowed
         "http://10.0.0.1/x",
         "http://169.254.169.254/latest/meta-data",
         "http://localhost/x",
+        "http://100.64.0.1/x",
     ],
 )
 def test_internal_ip_blocked(bad_url: str) -> None:
@@ -99,3 +100,28 @@ def test_empty_resolution_fails_closed() -> None:
         pytest.raises(SsrfBlocked),
     ):
         assert_url_allowed("http://weird.example.com/x")
+
+
+def test_resolve_and_check_returns_validated_ips() -> None:
+    """Zwei Einträge (IPv4 + IPv6) => beide IPs in Rückgabe."""
+    mock_addrinfos = [
+        (2, 1, 6, "", ("93.184.216.34", 80)),
+        (30, 1, 6, "", ("2606:2800:220:1:248:1893:25c8:1946", 80)),
+    ]
+    with patch("wortlaut.archive.ssrf.socket.getaddrinfo", return_value=mock_addrinfos):
+        ips = resolve_and_check("http://example.org/page")
+    assert "93.184.216.34" in ips
+    assert "2606:2800:220:1:248:1893:25c8:1946" in ips
+
+
+def test_resolve_and_check_blocks_mixed_resolution() -> None:
+    """Eine gültige IP + eine interne IP => SsrfBlocked."""
+    mock_addrinfos = [
+        (2, 1, 6, "", ("93.184.216.34", 80)),
+        (2, 1, 6, "", ("10.0.0.1", 80)),
+    ]
+    with (
+        patch("wortlaut.archive.ssrf.socket.getaddrinfo", return_value=mock_addrinfos),
+        pytest.raises(SsrfBlocked),
+    ):
+        resolve_and_check("http://evil.internal.example.com/x")
