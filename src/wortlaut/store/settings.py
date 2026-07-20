@@ -9,3 +9,15 @@ class DbSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="WORTLAUT_DB_")
 
     dsn: str
+
+
+class WormSettings(BaseSettings):
+    """MinIO WORM-Storage-Zugangsdaten (R-SEC-01)."""
+
+    model_config = SettingsConfigDict(env_prefix="WORTLAUT_WORM_")
+
+    endpoint: str
+    access_key: str
+    secret_key: str
+    bucket: str = "wortlaut-worm"
+    secure: bool = True

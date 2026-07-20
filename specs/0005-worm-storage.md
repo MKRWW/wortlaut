@@ -27,8 +27,8 @@ from typing import Protocol
 
 class WormStore(Protocol):
     async def ensure_bucket(self) -> None: ...
-    async def put(self, key: str, data: bytes, *, content_type: str) -> str: ...  # → raw_bytes_ref
-    async def get(self, key: str) -> bytes: ...
+    async def put(self, key: str, data: bytes, *, content_type: str) -> str: ...  # → versions-gepinnte raw_bytes_ref
+    async def get(self, ref: str) -> bytes: ...   # liest EXAKT die in ref gepinnte Version
 
 class MinioWormStore:                      # implementiert WormStore
     def __init__(self, settings: "WormSettings") -> None: ...
@@ -36,9 +36,10 @@ class MinioWormStore:                      # implementiert WormStore
         """Erstellt den Bucket mit aktiviertem Object-Lock (idempotent); Object-Lock ist
         nur bei Bucket-Creation setzbar."""
     async def put(self, key: str, data: bytes, *, content_type: str) -> str:
-        """Legt das Objekt ab, setzt Legal-Hold=ON. Gibt stabile Ref zurück:
-        f's3://{bucket}/{key}'."""
-    async def get(self, key: str) -> bytes: ...
+        """Legt eine neue, per Legal-Hold gesperrte Version ab. Gibt eine versions-gepinnte
+        Ref zurück: f's3://{bucket}/{key}?versionId={version_id}'."""
+    async def get(self, ref: str) -> bytes:
+        """Liest exakt die in ref gepinnte Version (bucket/key/versionId)."""
 
 # src/wortlaut/store/settings.py  (erweitert #16 DbSettings-Muster; pydantic-settings, ENV)
 class WormSettings(BaseSettings):
@@ -59,36 +60,46 @@ class WormSettings(BaseSettings):
   **nicht** im Adapter.
 - **Bucket mit Object-Lock:** `ensure_bucket` erstellt den Bucket mit `object_lock=True`
   (nur bei Creation setzbar) und ist idempotent (existiert → no-op).
-- **Stabile Ref:** `put` gibt `s3://{bucket}/{key}` zurück → landet später in
-  `source.raw_bytes_ref` (#2). Der Adapter parst/erzeugt keine Hashes.
-- **Kein Delete/Overwrite by construction:** put auf existierenden, gehaltenen Key scheitert
-  an Object-Lock/Legal-Hold; das ist die WORM-Garantie, nicht eine Code-Konvention.
+- **Versions-gepinnte Ref (wichtig, S3-Semantik):** Object-Lock erzwingt **Versionierung**;
+  Legal-Hold schützt die **konkrete Version** vor Löschung/Änderung, **nicht** den Namen vor
+  neuen Versionen/Delete-Markern. Darum pinnt `put` die von S3 vergebene `version_id` in die Ref
+  (`s3://{bucket}/{key}?versionId={vid}`), und `get(ref)` liest **exakt diese Version**. So ist
+  die Originalversion immer nachweisbar unverändert abrufbar — Grundlage für tamper-sicheres
+  #8 /verify. Die Ref landet in `source.raw_bytes_ref` (#2). Der Adapter erzeugt keine Hashes.
+- **WORM-Garantie = Versions-Immutabilität:** die gepinnte Version kann (ohne privilegierten
+  `BypassGovernanceRetention`) weder gelöscht noch verändert werden (Legal-Hold). Ein zweiter
+  `put` auf denselben Key erzeugt eine *neue* Version (kein Fehler) — die alte bleibt gesperrt
+  abrufbar. Der Adapter hat keinen Delete-/Overwrite-Pfad; content-adressierte Keys (Key=`content_hash`,
+  #7) bedeuten ohnehin: gleicher Key ⇒ gleiche Bytes.
 - **Secrets nur aus ENV** (R-SEC-01): Endpoint/Keys via `WormSettings`, nie im Code.
 
 ## 5. Testbare Akzeptanzkriterien (Given/When/Then + Metrik)
-- [ ] **AC1** *Given* frischer WORM-Bucket, *When* `put("k1", b"bytes", content_type="application/octet-stream")`
-      dann `get("k1")`, *Then* zurückgegebene Bytes == `b"bytes"` **und** die Ref == `s3://<bucket>/k1`. `[integration]`
-- [ ] **AC2** *Given* abgelegtes Objekt `k1`, *When* `put("k1", b"other", …)` (Overwrite), *Then* Fehler
-      (Object-Lock/Legal-Hold) **und** `get("k1")` liefert weiterhin die **ursprünglichen** Bytes. `[integration]`
-- [ ] **AC3** *Given* abgelegtes Objekt `k1`, *When* Delete-Versuch über die reguläre S3-Rolle (ohne
-      Bypass), *Then* Fehler **und** Objekt existiert weiter. `[integration]`
-- [ ] **AC4** *Given* frisch abgelegtes `k1`, *When* Object-Legal-Hold-Status abgefragt, *Then* == `ON`. `[integration]`
+- [ ] **AC1** *Given* frischer WORM-Bucket, *When* `put("k1", b"bytes", …)` → `ref`, dann `get(ref)`,
+      *Then* zurückgegebene Bytes == `b"bytes"` **und** `ref` beginnt mit `s3://<bucket>/k1?versionId=`. `[integration]`
+- [ ] **AC2** *Given* abgelegtes Objekt (`ref1`), *When* ein **zweiter** `put` auf denselben Key
+      (`ref2`, neue Version), *Then* `versionId(ref1) != versionId(ref2)` **und** `get(ref1)` liefert
+      weiterhin die **ursprünglichen** Bytes (Versions-Immutabilität), `get(ref2)` die neuen. `[integration]`
+- [ ] **AC3** *Given* abgelegtes Objekt (`ref`), *When* `remove_object` der **gepinnten Version**
+      über die reguläre S3-Rolle (ohne Bypass), *Then* `S3Error` (Legal-Hold) **und** `get(ref)` liefert
+      die Bytes weiterhin. `[integration]`
+- [ ] **AC4** *Given* frisch abgelegte Version (`ref`), *When* Legal-Hold-Status **dieser Version**
+      abgefragt, *Then* == `ON`. `[integration]`
 - [ ] **AC5** *Given* nicht existierender Bucket, *When* `ensure_bucket`, *Then* Bucket existiert **mit
       aktiviertem Object-Lock**; erneuter `ensure_bucket`-Aufruf ist fehlerfrei (idempotent). `[integration]`
 - [ ] **AC6** *Given* die öffentliche Adapter-API, *When* via `inspect`/`dir` geprüft, *Then* existiert
       **kein** öffentliches `delete`/`remove`/`release_hold`/`overwrite` (nur `ensure_bucket`/`put`/`get`). `[unit]`
-- [ ] **AC7** *Given* frischer Bucket, *When* `get("unbekannt")`, *Then* definierter Fehler (NotFound),
-      **kein** leerer/Null-Erfolg. `[integration]`
+- [ ] **AC7** *Given* frischer Bucket, *When* `get(ref)` mit unbekanntem Key/unbekannter Version,
+      *Then* `S3Error` (NotFound), **kein** leerer/Null-Erfolg. `[integration]`
 > Jedes AC ist von einem automatisierten Test mit Ja/Nein beantwortbar.
 
 ## 6. Testplan (Test-zu-AC-Mapping)
 - **Integration (Testcontainers MinIO, neue Fixture `worm_store`; Bucket mit Object-Lock):**
   `tests/integration/test_worm_storage.py`
   - `test_put_get_roundtrip` → **AC1**
-  - `test_overwrite_denied` → **AC2** · `test_delete_denied` → **AC3**
+  - `test_original_version_immutable` → **AC2** · `test_locked_version_delete_denied` → **AC3**
   - `test_legal_hold_active` → **AC4**
   - `test_ensure_bucket_object_lock_and_idempotent` → **AC5**
-  - `test_get_unknown_key_raises` → **AC7**
+  - `test_get_unknown_version_raises` → **AC7**
   - Fixture: `MinioContainer` (digest-gepinnt, Supply-Chain R-SEC; mit `MINIO_ROOT_*`), Bucket
     per `ensure_bucket`. Analog zur `pg_dsn`-Fixture aus #16 (conftest).
 - **Unit (rein, kein Container):** `tests/unit/test_worm_api_surface.py`
