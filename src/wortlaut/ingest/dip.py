@@ -18,6 +18,8 @@ from wortlaut.ingest.settings import DipSettings
 
 logger = logging.getLogger(__name__)
 
+_MAX_PAGES = 1000  # Fail-loud-Wächter gegen Endlos-Pagination
+
 
 class DipFetchError(Exception):
     """Fetch lieferte etwas anderes als ein direkt geliefertes, gueltiges PDF."""
@@ -45,37 +47,51 @@ class DipPlenarprotokollAdapter:
         return self._client
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]:
-        """DIP-Metadaten-Endpoint → je Protokoll ein SourceRef mit dem PDF-URL."""
+        """DIP-Metadaten-Endpoint → je Protokoll ein SourceRef (folgt der Cursor-Pagination)."""
         url = f"{self._settings.api_base_url}/plenarprotokoll"
-        params = {
+        base_params: dict[str, str] = {
             "f.datum.start": since.strftime("%Y-%m-%d"),
             "f.zuordnung": "BT",
             "format": "json",
         }
-        response = await self._client_or_create().get(
-            url,
-            params=params,
-            headers={"Authorization": f"ApiKey {self._settings.api_key}"},
-        )
-        response.raise_for_status()
-        data = response.json()
-
+        headers = {"Authorization": f"ApiKey {self._settings.api_key}"}
         refs: list[SourceRef] = []
-        for doc in data.get("documents", []):
+        cursor: str | None = None
+        for _ in range(_MAX_PAGES):
+            params = dict(base_params)
+            if cursor is not None:
+                params["cursor"] = cursor
+            response = await self._client_or_create().get(url, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            docs: list[dict[str, object]] = data.get("documents", [])
+            refs.extend(self._refs_from_documents(docs))
+            new_cursor: str | None = data.get("cursor")
+            if not new_cursor or new_cursor == cursor:
+                return refs
+            cursor = new_cursor
+        raise DipFetchError(f"pagination did not terminate after {_MAX_PAGES} pages")
+
+    def _refs_from_documents(self, documents: list[dict[str, object]]) -> list[SourceRef]:
+        """Baut SourceRefs aus DIP-documents (überspringt Einträge ohne pdf_url, mit Warnung)."""
+        refs: list[SourceRef] = []
+        for doc in documents:
             fundstelle = doc.get("fundstelle", {})
+            if not isinstance(fundstelle, dict):
+                fundstelle = {}
             pdf_url = fundstelle.get("pdf_url", "")
             if not pdf_url:
                 logger.warning("DIP document %s has no fundstelle.pdf_url, skipping", doc.get("id"))
                 continue
             refs.append(
                 SourceRef(
-                    origin_url=pdf_url,
+                    origin_url=str(pdf_url),
                     source_type="plenarprotokoll",
                     hint={
-                        "dokumentnummer": doc.get("dokumentnummer", ""),
-                        "datum": doc.get("datum", ""),
-                        "wahlperiode": doc.get("wahlperiode", ""),
-                        "dip_id": doc.get("id", ""),
+                        "dokumentnummer": str(doc.get("dokumentnummer", "")),
+                        "datum": str(doc.get("datum", "")),
+                        "wahlperiode": str(doc.get("wahlperiode", "")),
+                        "dip_id": str(doc.get("id", "")),
                     },
                 )
             )
