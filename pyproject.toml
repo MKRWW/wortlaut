@@ -68,10 +68,11 @@ ignore_missing_imports = true
 # --- Tests + Coverage (R-TEST-01) ---
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov --cov-report=term-missing --cov-fail-under=80 --strict-markers"
+addopts = '--cov --cov-report=term-missing --cov-fail-under=80 --strict-markers -m "not live"'
 asyncio_mode = "auto"
 markers = [
   "integration: Test gegen echte Infrastruktur (Testcontainers, braucht Docker)",
+  "live: Echter Fremdarchiv-Call (Wayback/archive.today) — nur manuell via -m live, nie in CI",
 ]
 
 [tool.coverage.run]
