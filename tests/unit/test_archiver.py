@@ -286,3 +286,159 @@ async def test_archive_all_both_success() -> None:
     assert result.wayback_url == "https://web.archive.org/20260101/https://example.com/"
     assert result.archive_today_url == "https://archive.ph/ok"
     assert result.errors == {}
+
+
+# ── Unglückliche Pfade (Fehlerbehandlung, kein falscher Link) ───────────
+
+
+@pytest.mark.asyncio
+async def test_archive_today_5xx_retry_then_success() -> None:
+    """archive.today erst 5xx, dann Erfolg → genau 2 Aufrufe, Snapshot gesetzt."""
+    archiver = ArchiveTodayArchiver(retry_delay=0.0)
+    mock_client = AsyncMock()
+    mock_client.post.side_effect = [
+        _mock_response(503),
+        _mock_response(302, headers={"location": "https://archive.ph/after5xx"}, is_redirect=True),
+    ]
+    archiver._client = mock_client
+
+    result = await archiver.archive("https://example.com/")
+
+    assert result == "https://archive.ph/after5xx"
+    assert mock_client.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_archive_today_5xx_twice_raises() -> None:
+    """archive.today zweimal 5xx → ValueError nach genau einem Retry."""
+    archiver = ArchiveTodayArchiver(retry_delay=0.0)
+    mock_client = AsyncMock()
+    mock_client.post.side_effect = [_mock_response(503), _mock_response(503)]
+    archiver._client = mock_client
+
+    with pytest.raises(ValueError, match="503"):
+        await archiver.archive("https://example.com/")
+    assert mock_client.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_archive_today_timeout_twice_raises() -> None:
+    """archive.today zweimal Timeout → ValueError nach genau einem Retry."""
+    archiver = ArchiveTodayArchiver(retry_delay=0.0)
+    mock_client = AsyncMock()
+    mock_client.post.side_effect = [
+        httpx.TimeoutException("timeout 1"),
+        httpx.TimeoutException("timeout 2"),
+    ]
+    archiver._client = mock_client
+
+    with pytest.raises(ValueError, match="failed after retry"):
+        await archiver.archive("https://example.com/")
+    assert mock_client.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_archive_today_unexpected_status_raises() -> None:
+    """archive.today 404 → ValueError, kein Retry."""
+    archiver = ArchiveTodayArchiver(retry_delay=0.0)
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(404)
+    archiver._client = mock_client
+
+    with pytest.raises(ValueError, match="unexpected status 404"):
+        await archiver.archive("https://example.com/")
+    assert mock_client.post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_today_200_without_snapshot_raises() -> None:
+    """archive.today 200 ohne Location/Refresh → ValueError (kein falscher Link)."""
+    archiver = ArchiveTodayArchiver(retry_delay=0.0)
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(200)
+    archiver._client = mock_client
+
+    with pytest.raises(ValueError, match="no snapshot url"):
+        await archiver.archive("https://example.com/")
+
+
+@pytest.mark.asyncio
+async def test_wayback_absolute_content_location() -> None:
+    """Wayback mit absoluter Content-Location → unverändert übernommen."""
+    wayback = WaybackArchiver()
+    mock_client = AsyncMock()
+    mock_client.get.return_value = _mock_response(
+        200,
+        headers={"content-location": "https://web.archive.org/web/1/https://example.com/"},
+    )
+    wayback._client = mock_client
+
+    result = await wayback.archive("https://example.com/")
+
+    assert result == "https://web.archive.org/web/1/https://example.com/"
+
+
+@pytest.mark.asyncio
+async def test_wayback_relative_redirect_location() -> None:
+    """Wayback Redirect mit relativer Location → mit Wayback-Basis absolutiert."""
+    wayback = WaybackArchiver()
+    mock_client = AsyncMock()
+    mock_client.get.return_value = _mock_response(
+        302,
+        headers={"location": "/web/20260101/https://example.com/"},
+        is_redirect=True,
+    )
+    wayback._client = mock_client
+
+    result = await wayback.archive("https://example.com/")
+
+    assert result == "https://web.archive.org/web/20260101/https://example.com/"
+
+
+@pytest.mark.asyncio
+async def test_wayback_without_snapshot_raises() -> None:
+    """Wayback 200 ohne Content-Location/Redirect → ValueError."""
+    wayback = WaybackArchiver()
+    mock_client = AsyncMock()
+    mock_client.get.return_value = _mock_response(200)
+    wayback._client = mock_client
+
+    with pytest.raises(ValueError, match="no snapshot url"):
+        await wayback.archive("https://example.com/")
+
+
+@pytest.mark.asyncio
+async def test_http_snapshot_rejected() -> None:
+    """Snapshot-URL mit http statt https → ValueError (Downgrade wird verworfen)."""
+    archiver = ArchiveTodayArchiver(retry_delay=0.0)
+    mock_client = AsyncMock()
+    mock_client.post.return_value = _mock_response(
+        302,
+        headers={"location": "http://archive.ph/downgrade"},
+        is_redirect=True,
+    )
+    archiver._client = mock_client
+
+    with pytest.raises(ValueError, match="not https"):
+        await archiver.archive("https://example.com/")
+
+
+@pytest.mark.asyncio
+async def test_client_lifecycle_create_and_aclose() -> None:
+    """_client_or_create erzeugt lazy genau einen Client; aclose schließt und leert ihn."""
+    wayback = WaybackArchiver()
+    atoday = ArchiveTodayArchiver(retry_delay=0.0)
+
+    with patch("wortlaut.archive.archiver.httpx.AsyncClient", return_value=AsyncMock()) as factory:
+        wb_client = wayback._client_or_create()
+        at_client = atoday._client_or_create()
+
+        assert wayback._client_or_create() is wb_client
+        assert atoday._client_or_create() is at_client
+        assert factory.call_count == 2
+
+    await wayback.aclose()
+    await atoday.aclose()
+
+    assert wayback._client is None
+    assert atoday._client is None

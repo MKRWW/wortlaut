@@ -130,37 +130,21 @@ class ArchiveTodayArchiver:
             except (httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
                 last_exc = exc
                 if attempt == 0:
-                    logger.info(
-                        "archive.today attempt 1 failed, retrying in %.1fs", self._retry_delay
-                    )
-                    await asyncio.sleep(self._retry_delay)
+                    await self._backoff("attempt 1 failed")
                     continue
                 raise ValueError(
                     f"archive.today failed after retry for {origin_url}: {exc}"
                 ) from exc
 
-            # 3xx Redirect → Location
-            if response.is_redirect or 300 <= response.status_code < 400:
-                location: str = response.headers.get("location", "")
-                if location:
-                    _validate_snapshot_url(location, ARCHIVE_TODAY_HOST)
-                    return location
-
-            # Refresh Header: "0; url=<snapshot>"
-            refresh: str = response.headers.get("refresh", "")
-            if refresh and "url=" in refresh:
-                parts = refresh.split("url=")
-                if len(parts) == 2:
-                    snapshot_url = parts[1].strip()
-                    _validate_snapshot_url(snapshot_url, ARCHIVE_TODAY_HOST)
-                    return snapshot_url
+            snapshot_url = _snapshot_from_archive_today(response)
+            if snapshot_url is not None:
+                return snapshot_url
 
             # 5xx → Retry
             if response.status_code >= 500:
                 last_exc = ValueError(f"archive.today status {response.status_code}")
                 if attempt == 0:
-                    logger.info("archive.today 5xx, retrying in %.1fs", self._retry_delay)
-                    await asyncio.sleep(self._retry_delay)
+                    await self._backoff(f"status {response.status_code}")
                     continue
                 raise last_exc
 
@@ -175,6 +159,11 @@ class ArchiveTodayArchiver:
         # Unreachable, but satisfy type checker
         raise last_exc if last_exc else ValueError("archive.today failed")
 
+    async def _backoff(self, reason: str) -> None:
+        """Wartet retry_delay vor dem zweiten (und letzten) Versuch."""
+        logger.info("archive.today %s, retrying in %.1fs", reason, self._retry_delay)
+        await asyncio.sleep(self._retry_delay)
+
     async def aclose(self) -> None:
         """Schließt den internen httpx-Client, falls einer erzeugt wurde."""
         if self._client is not None:
@@ -182,7 +171,32 @@ class ArchiveTodayArchiver:
             self._client = None
 
 
-# ── Snapshot-Validierung (AC7) ──────────────────────────────────────────
+# ── Snapshot-Extraktion & -Validierung (AC7) ────────────────────────────
+
+
+def _snapshot_from_archive_today(response: httpx.Response) -> str | None:
+    """Extrahiert die Snapshot-URL aus Redirect-Location oder Refresh-Header.
+
+    None, wenn die Antwort keine Snapshot-URL trägt; gefundene URLs werden
+    gegen den archive.today-Host validiert (AC7, wirft ValueError bei Fremd-Host).
+    """
+    # 3xx Redirect → Location
+    if response.is_redirect or 300 <= response.status_code < 400:
+        location: str = response.headers.get("location", "")
+        if location:
+            _validate_snapshot_url(location, ARCHIVE_TODAY_HOST)
+            return location
+
+    # Refresh Header: "0; url=<snapshot>"
+    refresh: str = response.headers.get("refresh", "")
+    if refresh and "url=" in refresh:
+        parts = refresh.split("url=")
+        if len(parts) == 2:
+            snapshot_url = parts[1].strip()
+            _validate_snapshot_url(snapshot_url, ARCHIVE_TODAY_HOST)
+            return snapshot_url
+
+    return None
 
 
 def _validate_snapshot_url(snapshot_url: str, expected_host: str) -> None:
