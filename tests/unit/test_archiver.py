@@ -5,12 +5,14 @@ Rein: httpx wird via unittest.mock gemockt; kein Live-Call.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
 
 from wortlaut.archive.archiver import (
+    ARCHIVE_TODAY_HOST,
+    WAYBACK_HOST,
     ArchiveResult,
     ArchiveTodayArchiver,
     WaybackArchiver,
@@ -429,13 +431,14 @@ async def test_client_lifecycle_create_and_aclose() -> None:
     wayback = WaybackArchiver()
     atoday = ArchiveTodayArchiver(retry_delay=0.0)
 
-    with patch("wortlaut.archive.archiver.httpx.AsyncClient", return_value=AsyncMock()) as factory:
+    with patch("wortlaut.archive.archiver.pinned_client", return_value=AsyncMock()) as factory:
         wb_client = wayback._client_or_create()
         at_client = atoday._client_or_create()
 
         assert wayback._client_or_create() is wb_client
         assert atoday._client_or_create() is at_client
         assert factory.call_count == 2
+        assert factory.call_args_list == [call(WAYBACK_HOST), call(ARCHIVE_TODAY_HOST)]
 
     await wayback.aclose()
     await atoday.aclose()
