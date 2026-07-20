@@ -42,8 +42,10 @@ def _raw() -> RawSource:
 def test_normalize_deterministic() -> None:  # AC1
     adapter = _adapter()
     raw = _raw()
-    assert adapter.normalize(raw) == adapter.normalize(raw)
-    assert "Abg. Dr. Max Mustermann (AfD):" in adapter.normalize(raw)
+    first = adapter.normalize(raw)
+    second = adapter.normalize(raw)
+    assert first == second  # deterministisch: gleiche Bytes → gleicher Text
+    assert "Abg. Dr. Max Mustermann (AfD):" in first
 
 
 def test_normalize_two_column_order() -> None:  # AC2
@@ -111,13 +113,16 @@ def test_oversized_pdf_rejected() -> None:  # R-SEC-06
         mime_type="application/pdf",
         retrieved_at=datetime.now(UTC),
     )
+    adapter = _adapter()
     with pytest.raises(ValueError, match="exceeds"):
-        _adapter().normalize(raw)
+        adapter.normalize(raw)
 
 
 def test_too_many_pages_rejected(monkeypatch: pytest.MonkeyPatch) -> None:  # R-SEC-06
     import wortlaut.ingest.protokoll_parse as pp
 
     monkeypatch.setattr(pp, "MAX_PDF_PAGES", 0)
+    adapter = _adapter()
+    raw = _raw()
     with pytest.raises(ValueError, match="pages"):
-        _adapter().normalize(_raw())
+        adapter.normalize(raw)

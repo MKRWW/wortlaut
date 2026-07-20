@@ -38,8 +38,10 @@ _MONTHS = {
     "Dezember": 12,
 }
 _DATE_RE = re.compile(r"den (\d{1,2})\. (\w+) (\d{4})")
-_PROTOKOLL_RE = re.compile(r"Plenarprotokoll (\d+/\d+)")
-_SITZUNG_RE = re.compile(r"(\d+)\. Sitzung")
+# Ziffern-Quantoren begrenzt: unbegrenztes \d+ vor einem Nicht-Ziffer-Literal
+# backtrackt sonst quadratisch (S8786). Sitzungs-/Protokollnummern sind klein.
+_PROTOKOLL_RE = re.compile(r"Plenarprotokoll (\d{1,3}/\d{1,4})")
+_SITZUNG_RE = re.compile(r"(\d{1,4})\. Sitzung")
 _HYPHEN_BREAK = re.compile(r"-\n(\w)")
 _PAGENUM_LINE = re.compile(r"\s*\d+\s*")
 _INLINE_WS = re.compile(r"[ \t]+")
