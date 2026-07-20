@@ -1,2 +1,14 @@
-# Binärformate: keine Zeilenende-Normalisierung (Test-Fixtures/PDF-Bytes sauber halten)
-*.pdf binary
+# Zeilenenden plattformübergreifend auf LF normalisieren (gegen CRLF-Drift auf Windows).
+# eol=lf erzwingt LF auch beim Checkout, unabhängig von lokalem core.autocrlf.
+* text=auto eol=lf
+
+# Binärformate: keine Zeilenende-Normalisierung (Test-Fixtures/Bytes sauber halten).
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.gz   binary
+*.whl  binary
