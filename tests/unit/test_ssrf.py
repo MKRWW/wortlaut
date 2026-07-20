@@ -84,3 +84,18 @@ def test_allowlist_host_not_in_list_blocked() -> None:
     allow_hosts = frozenset({"allowed.example.com"})
     with pytest.raises(SsrfBlocked):
         assert_url_allowed("http://not-allowed.example.com/x", allow_hosts=allow_hosts)
+
+
+def test_url_without_hostname_blocked() -> None:
+    """URL ohne Hostname → SsrfBlocked."""
+    with pytest.raises(SsrfBlocked):
+        assert_url_allowed("http:///pfad-ohne-host")
+
+
+def test_empty_resolution_fails_closed() -> None:
+    """getaddrinfo liefert keine prüfbare Adresse → SsrfBlocked (fail closed)."""
+    with (
+        patch("wortlaut.archive.ssrf.socket.getaddrinfo", return_value=[]),
+        pytest.raises(SsrfBlocked),
+    ):
+        assert_url_allowed("http://weird.example.com/x")
