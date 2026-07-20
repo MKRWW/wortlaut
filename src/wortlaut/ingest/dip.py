@@ -14,6 +14,11 @@ from urllib.parse import urlparse
 import httpx
 
 from wortlaut.ingest.adapter import RawSource, SourceRef, SpanDraft
+from wortlaut.ingest.protokoll_parse import (
+    extract_text,
+    parse_header,
+    segment_speeches,
+)
 from wortlaut.ingest.settings import DipSettings
 
 logger = logging.getLogger(__name__)
@@ -140,12 +145,24 @@ class DipPlenarprotokollAdapter:
         )
 
     def normalize(self, raw: RawSource) -> str:
-        """PDF→Text ist Phase 1."""
-        raise NotImplementedError("PDF→Text ist Phase 1")
+        """PDF-Bytes → deterministischer, spaltenbewusster kanonischer Klartext (#41)."""
+        return extract_text(raw.raw_bytes)
 
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
-        """Parse-to-span ist Phase 1."""
-        raise NotImplementedError("parse-to-span ist Phase 1")
+        """Kanonischer Text → je Redebeitrag ein SpanDraft (Offset-invariant, #41)."""
+        spoken_at, locator = parse_header(normalized)
+        return [
+            SpanDraft(
+                verbatim_text=seg.verbatim_text,
+                text_start=seg.text_start,
+                text_end=seg.text_end,
+                speaker_hint={"name": seg.name, "party": seg.party},
+                spoken_at=spoken_at,
+                locator=locator,
+                permalink=raw.origin_url,
+            )
+            for seg in segment_speeches(normalized)
+        ]
 
     async def aclose(self) -> None:
         """Schließt den internen httpx-Client, falls einer erzeugt wurde."""
