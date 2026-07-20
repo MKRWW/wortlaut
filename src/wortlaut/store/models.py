@@ -7,12 +7,24 @@ werden von der Migration erzeugt → hier ``create_type=False`` (kein zweites CR
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import CHAR, BigInteger, ForeignKeyConstraint, Text, func
+from sqlalchemy import (
+    CHAR,
+    BigInteger,
+    Boolean,
+    Computed,
+    Date,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ENUM as PgEnum
-from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -93,4 +105,111 @@ class Source(Base):
             ["adapter_name", "adapter_version"],
             ["ingest_adapter.name", "ingest_adapter.version"],
         ),
+    )
+
+
+# -- Enums für Span-Schema (datamodel §2, create_type=False — Migration erzeugt) --
+
+_VERIFICATION = PgEnum(
+    "official",
+    "machine",
+    "human_verified",
+    "disputed",
+    "superseded",
+    name="verification",
+    create_type=False,
+)
+_VISIBILITY = PgEnum(
+    "public",
+    "restricted",
+    "sensitive",
+    name="visibility_class",
+    create_type=False,
+)
+
+
+class Speaker(Base):
+    """Mandatsträger; mutabel (§4)."""
+
+    __tablename__ = "speaker"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    full_name: Mapped[str] = mapped_column(Text, nullable=False)
+    external_ids: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class Mandate(Base):
+    """Zeitlich begrenztes Mandat; mutabel (§4)."""
+
+    __tablename__ = "mandate"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    speaker_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("speaker.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    parliament: Mapped[str] = mapped_column(Text, nullable=False)
+    party: Mapped[str | None] = mapped_column(Text)
+    active_from: Mapped[date] = mapped_column(Date, nullable=False)
+    active_to: Mapped[date | None] = mapped_column(Date)
+
+
+class Span(Base):
+    """Zitierfähige Einheit; Inhalt immutabel/append-only (Trigger, §4)."""
+
+    __tablename__ = "span"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    source_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("source.id"), nullable=False
+    )
+    speaker_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("speaker.id"), nullable=False
+    )
+    mandate_id: Mapped[UUID | None] = mapped_column(PgUUID(as_uuid=True), ForeignKey("mandate.id"))
+    verbatim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    text_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    text_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    spoken_at: Mapped[date] = mapped_column(Date, nullable=False)
+    locator: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    permalink: Mapped[str] = mapped_column(Text, nullable=False)
+    span_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    fts: Mapped[str | None] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('german', verbatim_text)", persisted=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SpanState(Base):
+    """Mutabler Status (1:1 zu span); auditiert (§4)."""
+
+    __tablename__ = "span_state"
+
+    span_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("span.id"), primary_key=True
+    )
+    verification: Mapped[str] = mapped_column(_VERIFICATION, nullable=False)
+    visibility: Mapped[str] = mapped_column(_VISIBILITY, nullable=False)
+    redacted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    redaction_reason: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
