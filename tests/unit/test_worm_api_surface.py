@@ -71,4 +71,6 @@ def test_worm_settings_from_env(
     settings = WormSettings()
     for field, expected_value in expected.items():
         actual = getattr(settings, field)
-        assert actual == expected_value, f"Field {field}: expected {expected_value!r}, got {actual!r}"
+        assert actual == expected_value, (
+            f"Field {field}: expected {expected_value!r}, got {actual!r}"
+        )
