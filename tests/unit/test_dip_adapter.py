@@ -91,8 +91,10 @@ async def test_fetch_returns_pdf_bytes() -> None:
     )
 
     mock_response = MagicMock()
+    mock_response.is_redirect = False
+    mock_response.status_code = 200
+    mock_response.headers = {"content-type": "application/pdf"}
     mock_response.content = pdf_bytes
-    mock_response.raise_for_status = MagicMock()
 
     with patch("httpx.AsyncClient") as MockClient:
         client_instance = AsyncMock()

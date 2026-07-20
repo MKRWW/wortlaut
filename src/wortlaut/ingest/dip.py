@@ -19,6 +19,10 @@ from wortlaut.ingest.settings import DipSettings
 logger = logging.getLogger(__name__)
 
 
+class DipFetchError(Exception):
+    """Fetch lieferte etwas anderes als ein direkt geliefertes, gueltiges PDF."""
+
+
 class DipPlenarprotokollAdapter:
     """DIP-Plenarprotokoll-Adapter (erfüllt :class:`IngestAdapter`)."""
 
@@ -33,9 +37,11 @@ class DipPlenarprotokollAdapter:
         self._api_host = parsed.hostname or ""
 
     def _client_or_create(self) -> httpx.AsyncClient:
-        """Erzeugt den httpx-Client lazy beim ersten Request (kein eager I/O im __init__)."""
         if self._client is None:
-            self._client = httpx.AsyncClient()
+            self._client = httpx.AsyncClient(
+                follow_redirects=False,
+                timeout=httpx.Timeout(30.0),
+            )
         return self._client
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]:
@@ -84,12 +90,32 @@ class DipPlenarprotokollAdapter:
             )
 
         response = await self._client_or_create().get(ref.origin_url)
-        response.raise_for_status()
+
+        if response.is_redirect or 300 <= response.status_code < 400:
+            location = response.headers.get("location", "")
+            logger.warning(
+                "DIP fetch got redirect (%s) to %s for %s",
+                response.status_code,
+                location,
+                ref.origin_url,
+            )
+            raise DipFetchError(f"unexpected redirect {response.status_code} for {ref.origin_url}")
+
+        if response.status_code != 200:
+            raise DipFetchError(f"unexpected status {response.status_code} for {ref.origin_url}")
+
+        content = response.content
+        if not content.startswith(b"%PDF-"):
+            raise DipFetchError(f"response body is not a PDF (no %PDF- magic) for {ref.origin_url}")
+
+        content_type = response.headers.get("content-type", "")
+        if content_type and "application/pdf" not in content_type.lower():
+            raise DipFetchError(f"unexpected content-type '{content_type}' for {ref.origin_url}")
 
         return RawSource(
             origin_url=ref.origin_url,
             source_type=ref.source_type,
-            raw_bytes=response.content,
+            raw_bytes=content,
             mime_type="application/pdf",
             retrieved_at=datetime.now(UTC),
         )
