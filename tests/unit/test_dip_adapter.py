@@ -191,10 +191,11 @@ async def test_fetch_rejects_offhost_ref() -> None:
         client_instance.get.assert_not_called()
 
 
-# ── AC5: normalize und parse werfen NotImplementedError ─────────────────
+# ── normalize/parse sind ab #41 implementiert (Detail-ACs in test_dip_parsing) ──
 
 
-def test_normalize_and_parse_not_implemented_phase0() -> None:
+def test_normalize_parse_implemented_since_0041() -> None:
+    """Beide Methoden werfen kein NotImplementedError mehr; parse ist rein textbasiert."""
     settings = _get_settings()
     adapter = DipPlenarprotokollAdapter(settings)
 
@@ -206,11 +207,8 @@ def test_normalize_and_parse_not_implemented_phase0() -> None:
         retrieved_at=datetime.now(UTC),
     )
 
-    with pytest.raises(NotImplementedError, match="Phase 1"):
-        adapter.normalize(raw)
-
-    with pytest.raises(NotImplementedError, match="Phase 1"):
-        adapter.parse(raw, "")
+    # parse arbeitet auf bereits normalisiertem Text — kein Marker → keine Drafts.
+    assert adapter.parse(raw, "kein Redner-Marker hier") == []
 
 
 # ── AC7: trust_level und Identity ───────────────────────────────────────

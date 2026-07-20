@@ -21,6 +21,7 @@ dependencies = [
   "pydantic-settings>=2.4",
   "minio>=7",
   "httpx>=0.27",
+  "pymupdf>=1.28.0",
 ]
 
 [project.optional-dependencies]
@@ -63,6 +64,13 @@ exclude = ["\\.venv"]
 
 [[tool.mypy.overrides]]
 module = ["pgvector.*", "testcontainers.*"]
+ignore_missing_imports = true
+
+# pymupdf bringt unvollständige Upstream-Stubs mit (untypisierte Calls) → nicht
+# hineinanalysieren, komplett als Any behandeln (die I/O-Naht ist isoliert).
+[[tool.mypy.overrides]]
+module = ["pymupdf", "pymupdf.*", "fitz"]
+follow_imports = "skip"
 ignore_missing_imports = true
 
 # --- Tests + Coverage (R-TEST-01) ---
