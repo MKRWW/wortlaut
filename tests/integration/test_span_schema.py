@@ -322,21 +322,22 @@ async def test_span_and_state_fk_violations(conn: AsyncConnection) -> None:
 
 
 async def test_span_fts_generated_and_matches(conn: AsyncConnection) -> None:
-    # AC6: fts wird automatisch generiert und enthält den Token 'Würde'.
+    # AC6: fts wird automatisch generiert und ein deutscher Volltext-Match trifft.
     chain = await seed_full_chain(conn)
     span_id = chain["span_id"]
 
-    # Span mit echtem Text (ersetzt den 'Testtext'-Default)
-    # fts IS NOT NULL nach Generierung
+    # fts IS NOT NULL nach Generierung (Default-Span 'Testtext')
     is_not_null = await conn.scalar(
         text("SELECT fts IS NOT NULL FROM span WHERE id = CAST(:id AS uuid)"),
         {"id": span_id},
     )
     assert is_not_null is True
 
-    # Jetzt einen Span mit 'Die Würde des Menschen ist unantastbar' einfügen
+    # Span mit echtem Satz einfügen. Achtung Sprachfalle: 'Würde' ist im
+    # german-Stemmer ein STOPPWORT (Konjunktiv von 'werden') und landet nie
+    # im tsvector — daher wird auf 'unantastbar' gematcht.
     verbatim = "Die Würde des Menschen ist unantastbar"
-    wuerde_span_id = await _seed_span(
+    satz_span_id = await _seed_span(
         conn,
         chain["source_id"],
         chain["speaker_id"],
@@ -344,13 +345,13 @@ async def test_span_fts_generated_and_matches(conn: AsyncConnection) -> None:
         verbatim_text=verbatim,
     )
 
-    # FTS matcht 'Würde'
+    # FTS matcht 'unantastbar' (german-Konfiguration, GIN-Index vorhanden per AC1)
     match_count = await conn.scalar(
         text(
-            "SELECT count(*) FROM span WHERE fts @@ to_tsquery('german', 'Würde') "
+            "SELECT count(*) FROM span WHERE fts @@ to_tsquery('german', 'unantastbar') "
             "AND id = CAST(:id AS uuid)"
         ),
-        {"id": wuerde_span_id},
+        {"id": satz_span_id},
     )
     assert match_count == 1
 
