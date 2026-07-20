@@ -103,6 +103,12 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # Merge-Latte "alles gruen + 0 neue Sonar-Issues" (#37): das Free-Plan-Quality-Gate
+      # kann nicht auf "New issues > 0 => Error" gestellt werden, also erzwingt dieser
+      # Step die Regel selbst. Stdlib-only, kein uv noetig; Token nur im Header (R-SEC-01).
+      - name: "Issues-Gate (0 offene Sonar-Issues im PR)"
+        if: ${{ env.SONAR_TOKEN != '' && github.event_name == 'pull_request' }}
+        run: python3 scripts/check_sonar_pr_issues.py "${{ github.event.pull_request.number }}"
       - name: SonarCloud inaktiv (kein Token)
         if: ${{ env.SONAR_TOKEN == '' }}
         run: echo "SONAR_TOKEN nicht gesetzt - SonarCloud-Gate inaktiv (R-QUAL-04). Setup siehe README/CONTRIBUTING."
