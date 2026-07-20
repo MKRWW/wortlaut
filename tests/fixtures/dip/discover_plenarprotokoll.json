@@ -1,0 +1,24 @@
+{
+  "numFound": 2,
+  "cursor": "cursor-next-12345",
+  "documents": [
+    {
+      "dokumentnummer": "21/8001",
+      "datum": "2023-10-12",
+      "wahlperiode": "21",
+      "id": "btp-21-8001",
+      "fundstelle": {
+        "pdf_url": "https://dserver.bundestag.de/btp/21/21800/21800.pdf"
+      }
+    },
+    {
+      "dokumentnummer": "21/8002",
+      "datum": "2023-10-13",
+      "wahlperiode": "21",
+      "id": "btp-21-8002",
+      "fundstelle": {
+        "pdf_url": "https://dserver.bundestag.de/btp/21/21800/218002.pdf"
+      }
+    }
+  ]
+}

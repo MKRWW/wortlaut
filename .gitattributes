@@ -1,0 +1,2 @@
+# Binärformate: keine Zeilenende-Normalisierung (Test-Fixtures/PDF-Bytes sauber halten)
+*.pdf binary
