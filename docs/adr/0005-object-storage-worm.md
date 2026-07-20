@@ -1,6 +1,8 @@
 # ADR-0005: MinIO (S3 Object-Lock) als WORM-Speicher
 
-- **Status:** Accepted (2026-07-18)
+- **Status:** Superseded by [ADR-0007](0007-worm-lock-mode.md) (2026-07-20)
+- Die Grundwahl **MinIO/S3 Object-Lock** bleibt gültig; **abgelöst wird nur der
+  Lock-Modus** (Compliance → Governance + unbegrenzter Legal-Hold), siehe ADR-0007.
 
 ## Kontext
 Die Rohbytes jeder Quelle müssen **unveränderlich** abgelegt werden (Beweis-Integrität,
