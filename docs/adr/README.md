@@ -15,5 +15,6 @@ per neuer ADR **abgelöst** (Status: Superseded by ADR-XXXX). IDs werden nie wie
 | [0002](0002-build-tool-uv.md) | `uv` als Build-/Dependency-Tool | Accepted |
 | [0003](0003-persistence.md) | PostgreSQL + pgvector, Zugriff via SQLAlchemy Core + Alembic | Accepted |
 | [0004](0004-async-web.md) | Async-I/O (asyncpg/httpx) + FastAPI | Accepted |
-| [0005](0005-object-storage-worm.md) | MinIO (S3 Object-Lock) als WORM-Speicher | Accepted |
+| [0005](0005-object-storage-worm.md) | MinIO (S3 Object-Lock) als WORM-Speicher | Superseded by [0007](0007-worm-lock-mode.md) |
 | [0006](0006-testing-tdd.md) | pytest + Testcontainers, TDD-Pflicht | Accepted |
+| [0007](0007-worm-lock-mode.md) | WORM-Lock-Modus: Governance + unbegrenzter Legal-Hold | Accepted |
