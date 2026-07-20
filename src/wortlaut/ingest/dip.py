@@ -48,12 +48,15 @@ class DipPlenarprotokollAdapter:
         """DIP-Metadaten-Endpoint → je Protokoll ein SourceRef mit dem PDF-URL."""
         url = f"{self._settings.api_base_url}/plenarprotokoll"
         params = {
-            "apikey": self._settings.api_key,
             "f.datum.start": since.strftime("%Y-%m-%d"),
             "f.zuordnung": "BT",
             "format": "json",
         }
-        response = await self._client_or_create().get(url, params=params)
+        response = await self._client_or_create().get(
+            url,
+            params=params,
+            headers={"Authorization": f"ApiKey {self._settings.api_key}"},
+        )
         response.raise_for_status()
         data = response.json()
 

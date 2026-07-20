@@ -74,6 +74,44 @@ async def test_discover_yields_pdf_source_refs() -> None:
     client_instance.get.assert_called_once()
     call_args = client_instance.get.call_args
     assert "/plenarprotokoll" in call_args.args[0]
+    # #26: Key im Authorization-Header, nicht in Query-String (R-SEC-01)
+    assert "apikey" not in call_args.args[0]
+    assert "apikey" not in call_args.kwargs.get("params", {})
+    assert call_args.kwargs["headers"]["Authorization"] == "ApiKey test-key"
+
+
+# ── AC8: API-Key nie in URL/Query (R-SEC-01) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_discover_key_never_in_url_or_query() -> None:
+    """#26: Key geht als Authorization-Header, taucht nirgends in URL/Query auf (R-SEC-01)."""
+    with open(FIXTURES / "discover_plenarprotokoll.json", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = payload
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient") as MockClient:
+        client_instance = AsyncMock()
+        MockClient.return_value = client_instance
+        client_instance.get.return_value = mock_response
+
+        settings = _get_settings()
+        adapter = DipPlenarprotokollAdapter(settings)
+        since = datetime(2023, 10, 1, tzinfo=UTC)
+
+        await adapter.discover(since)
+
+    call_args = client_instance.get.call_args
+    # Key nicht im URL-Argument
+    assert "test-key" not in call_args.args[0]
+    # Key nicht in irgendeinem Query-Parameter-Wert
+    for value in call_args.kwargs.get("params", {}).values():
+        assert "test-key" not in str(value)
+    # Header exakt gesetzt
+    assert call_args.kwargs["headers"]["Authorization"] == "ApiKey test-key"
 
 
 # ── AC3: fetch liefert PDF-Bytes ────────────────────────────────────────
