@@ -22,6 +22,11 @@ async def source_exists(session: AsyncSession, content_hash: str) -> bool:
     return result is not None
 
 
+async def get_source_by_id(session: AsyncSession, source_id: UUID) -> Source | None:
+    """Lädt eine source per id (für /verify, #8); None bei unbekannter id."""
+    return await session.get(Source, source_id)
+
+
 @dataclass(frozen=True)
 class NewSource:
     """Einzufügende source-Zeile.
