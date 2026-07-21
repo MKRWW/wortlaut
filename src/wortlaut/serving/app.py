@@ -134,7 +134,7 @@ def create_app(sessionmaker: async_sessionmaker[AsyncSession], worm: WormStore) 
 
     SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-    @app.get("/v1/search", response_model=SearchResponse)
+    @app.get("/v1/search")
     async def search(
         params: Annotated[SearchParams, Query()], session: SessionDep
     ) -> SearchResponse:
@@ -150,7 +150,7 @@ def create_app(sessionmaker: async_sessionmaker[AsyncSession], worm: WormStore) 
         rows, total = await search_spans(session, criteria)
         return SearchResponse(results=[_span_result(r, params.q) for r in rows], total=total)
 
-    @app.get("/v1/spans/{span_id}", response_model=SpanDetail)
+    @app.get("/v1/spans/{span_id}", responses={404: {"description": "Span nicht gefunden"}})
     async def span_detail(span_id: UUID, session: SessionDep) -> SpanDetail:
         row = await get_span(session, span_id)
         if row is None:
@@ -161,7 +161,7 @@ def create_app(sessionmaker: async_sessionmaker[AsyncSession], worm: WormStore) 
         base = _span_result(row)
         return SpanDetail(**base.model_dump(), context=[_context_item(c) for c in context])
 
-    @app.get("/v1/spans/{span_id}/verify", response_model=VerifyResult)
+    @app.get("/v1/spans/{span_id}/verify", responses={404: {"description": "Span nicht gefunden"}})
     async def verify(span_id: UUID, session: SessionDep) -> VerifyResult:
         row = await get_span(session, span_id)
         if row is None:
@@ -178,7 +178,7 @@ def create_app(sessionmaker: async_sessionmaker[AsyncSession], worm: WormStore) 
             archive_today=report.archive_today,
         )
 
-    @app.get("/v1/sources/{source_id}", response_model=SourceEvidence)
+    @app.get("/v1/sources/{source_id}", responses={404: {"description": "Quelle nicht gefunden"}})
     async def source_evidence(source_id: UUID, session: SessionDep) -> SourceEvidence:
         row = await get_source(session, source_id)
         if row is None:
