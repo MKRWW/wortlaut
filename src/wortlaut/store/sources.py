@@ -24,7 +24,13 @@ async def source_exists(session: AsyncSession, content_hash: str) -> bool:
 
 @dataclass(frozen=True)
 class NewSource:
-    """Einzufügende source-Zeile (Feldliste = Ticket #7; normalized_text bleibt Phase-0 NULL)."""
+    """Einzufügende source-Zeile.
+
+    ``normalized_text`` wird beim Insert gesetzt (Option A, #42) — nicht per
+    späterem UPDATE (der Append-only-Trigger verbietet das). Bei Creation gesetzt
+    friert es den kanonischen Text ein, gegen den die Span-Offsets zeigen
+    (Grundlage Anti-Halluzination, R-DATA-06). ``None``, wenn normalize scheitert.
+    """
 
     content_hash: str
     raw_bytes_ref: str
@@ -38,6 +44,7 @@ class NewSource:
     byte_size: int
     mime_type: str
     retrieved_at: datetime
+    normalized_text: str | None = None
 
 
 async def insert_source(session: AsyncSession, row: NewSource) -> UUID:
@@ -59,7 +66,7 @@ async def insert_source(session: AsyncSession, row: NewSource) -> UUID:
         archive_wayback=row.archive_wayback,
         archive_today=row.archive_today,
         warc_ref=None,
-        normalized_text=None,
+        normalized_text=row.normalized_text,
     )
     session.add(quelle)
     await session.flush()
