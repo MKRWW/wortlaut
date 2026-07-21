@@ -27,8 +27,12 @@ from wortlaut.store.worm import WormStore
 
 pytestmark = pytest.mark.integration
 
-_LOCATOR_TOP3 = '{"protokoll":"20/88","sitzung":"88","tagesordnungspunkt":"3"}'
-_LOCATOR_TOP4 = '{"protokoll":"20/88","sitzung":"88","tagesordnungspunkt":"4"}'
+_LOCATOR_TOP3: dict[str, object] = {
+    "protokoll": "20/88",
+    "sitzung": "88",
+    "tagesordnungspunkt": "3",
+}
+_LOCATOR_TOP4: dict[str, object] = dict(_LOCATOR_TOP3, tagesordnungspunkt="4")
 
 # Öffentliche Beiträge (Quelle A) — normalized_A wird aus diesen Sätzen gebaut.
 _V1 = "Die Digitalisierung ist ein wichtiges Thema fuer das Land."
@@ -115,7 +119,7 @@ class _SpanSpec:
     normalized: str
     slice_key: str  # Offsets zeigen hierauf; == verbatim (ehrlich) oder != (manipuliert, AC9)
     spoken_at: date
-    locator: str
+    locator: dict[str, object]
     verification: str = "official"
     visibility: str = "public"
     redacted: bool = False
@@ -135,14 +139,10 @@ async def _span(session: AsyncSession, spec: _SpanSpec) -> UUID:
             text_start=start,
             text_end=end,
             spoken_at=spec.spoken_at,
-            locator={},  # gleich per raw SQL als JSONB-Literal gesetzt
+            locator=spec.locator,  # direkt beim Insert (span ist append-only, #40)
             permalink="https://dserver.bundestag.de/btp/20/2008800/2008800.pdf#p1",
             span_hash=span_hash(spec.verbatim),
         ),
-    )
-    await session.execute(
-        text("UPDATE span SET locator = CAST(:loc AS jsonb) WHERE id = CAST(:id AS uuid)"),
-        {"loc": spec.locator, "id": str(span_id)},
     )
     await session.execute(
         text(
@@ -185,7 +185,14 @@ async def _seed(session: AsyncSession, worm: WormStore) -> dict[str, UUID]:
     ids["machine"] = await _span(
         session,
         _SpanSpec(
-            src_a, mm, mm_m, _MACHINE, _NORMALIZED_A, _MACHINE, day5, _LOCATOR_TOP3,
+            src_a,
+            mm,
+            mm_m,
+            _MACHINE,
+            _NORMALIZED_A,
+            _MACHINE,
+            day5,
+            _LOCATOR_TOP3,
             verification="machine",
         ),
     )
