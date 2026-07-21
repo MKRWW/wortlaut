@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<style>
+  :root{
+    --bg:#0d1117; --panel:#11161d; --panel2:#0f141a; --line:#1f2630;
+    --fg:#e6edf3; --dim:#8b949e; --faint:#5b636d; --green:#3fb950; --amber:#e3b341; --red:#f85149;
+    --mono:'JetBrains Mono','DejaVu Sans Mono','Consolas',monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:19px;line-height:1.55;
+    padding:44px 56px;width:1400px}
+  .brand{font-size:34px;font-weight:bold}
+  .brand .h{color:var(--green)} .brand .cur{color:var(--green)}
+  .tagline{color:var(--dim);margin-top:6px;font-size:19px}
+  .neutral{color:var(--amber);margin-top:2px;font-size:17px}
+  .search{margin:34px 0 10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:18px 22px;display:flex;align-items:center;gap:14px;font-size:24px}
+  .search .p{color:var(--green)} .search .q{color:var(--fg)} .search .cur{color:var(--green);animation:none}
+  .meta{color:var(--faint);font-size:16px;margin:6px 4px 26px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px 26px;margin-bottom:24px}
+  .head{display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:17px;color:var(--dim);margin-bottom:14px}
+  .who{color:var(--fg);font-weight:bold;font-size:20px}
+  .party{color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:1px 9px 1px 8px;font-size:15px;display:inline-flex;align-items:center;gap:7px}
+  .party .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .tag{color:var(--faint);border:1px dashed var(--line);border-radius:6px;padding:1px 9px;font-size:15px}
+  .verbatim{font-size:21px;line-height:1.6;color:var(--fg)}
+  mark{background:rgba(227,179,65,.22);color:var(--amber);padding:0 3px;border-radius:3px}
+  .ctx{border-left:3px solid var(--line);margin:16px 0 6px;padding:4px 0 4px 18px}
+  .ctx .lbl{color:var(--faint);font-size:14px;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px}
+  .ctx .before{color:var(--faint);font-size:18px;line-height:1.5}
+  .ctx .before b{color:var(--dim);font-weight:bold}
+  .zoom{color:var(--green);font-size:16px;margin-top:6px;cursor:pointer}
+  .prov{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;margin-top:18px;padding-top:16px;
+    border-top:1px solid var(--line);font-size:15px;color:var(--dim)}
+  .prov a{color:var(--dim);text-decoration:none;border-bottom:1px dotted var(--faint)}
+  .hash{color:var(--faint)}
+  .verify-ok{color:var(--green);font-weight:bold;border:1px solid var(--green);border-radius:8px;padding:4px 12px}
+  .verify-btn{color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:4px 12px;background:var(--panel2)}
+  .foot{color:var(--faint);font-size:15px;margin-top:34px;border-top:1px solid var(--line);padding-top:18px;
+    display:flex;justify-content:space-between}
+  .chain{color:var(--faint)}
+  .chain b{color:var(--dim)}
+</style></head>
+<body>
+  <div class="brand"><span class="h">#</span>wortlaut<span class="cur">_</span> <span style="color:var(--dim);font-size:22px">/demo</span></div>
+  <div class="tagline">Ein Archiv des öffentlichen Wortes. Wörtlich, quellenbelegt, fälschungssicher.</div>
+  <div class="neutral">Parteineutral by design — dieselbe Suche gilt für jede Fraktion. Die Maschine urteilt nicht.</div>
+
+  <div class="search"><span class="p">$</span><span class="q">migration</span><span class="cur">_</span></div>
+  <div class="meta">2 Treffer · Plenarprotokolle Deutscher Bundestag · nur öffentlich, nur Amtsträger · Demo-Beispieldaten</div>
+
+  <!-- Karte 1: mit aufgezogenem Kontext + bestätigtem Verify -->
+  <div class="card">
+    <div class="head">
+      <span class="who">Beispiel Mustermann</span>
+      <span class="party"><span class="dot" style="background:#4a9fd4"></span>AfD</span>
+      <span>· 14.03.2024 ·</span>
+      <span class="tag">TOP 7 — Debatte Migrationspolitik</span>
+    </div>
+    <div class="ctx">
+      <div class="lbl">◂ Kontext (vorheriger Beitrag)</div>
+      <div class="before"><b>Präsidentin:</b> Als Nächstes hat das Wort die Abgeordnete … zum Antrag zur <b>Migration</b>spolitik.</div>
+    </div>
+    <div class="verbatim">Wir sagen ganz klar: eine geordnete <mark>Migration</mark> braucht klare Regeln, und diese Regeln müssen auch durchgesetzt werden. <span style="color:var(--faint)">(Beifall bei der AfD)</span> Es geht uns nicht um Ausgrenzung, sondern um Steuerung.</div>
+    <div class="zoom">▾ Kontext aufziehen (ganzer Tagesordnungspunkt) — clientseitig, keine neue Abfrage</div>
+    <div class="prov">
+      <a>↗ Permalink · Protokoll 20/123, S. 4711</a>
+      <a>⧉ Wayback</a>
+      <a>⧉ archive.today</a>
+      <span class="hash">sha256: a3f9 7c1e 09bb … 47fc</span>
+      <span class="verify-ok">✓ Hash bestätigt — SHA-256 stimmt</span>
+    </div>
+  </div>
+
+  <!-- Karte 2: eingeklappt, Verify noch nicht geklickt (Neutralität: andere Fraktion) -->
+  <div class="card">
+    <div class="head">
+      <span class="who">Beispiel Beispielfrau</span>
+      <span class="party"><span class="dot" style="background:#d9636b"></span>SPD</span>
+      <span>· 14.03.2024 ·</span>
+      <span class="tag">TOP 7 — Debatte Migrationspolitik</span>
+    </div>
+    <div class="verbatim">Bei der <mark>Migration</mark> geht es um Humanität und Ordnung zugleich; das eine ist ohne das andere nicht zu haben.</div>
+    <div class="zoom">▸ Kontext aufziehen</div>
+    <div class="prov">
+      <a>↗ Permalink · Protokoll 20/123, S. 4713</a>
+      <a>⧉ Wayback</a>
+      <a>⧉ archive.today</a>
+      <span class="hash">sha256: 6c2b 81e4 0af7 … 90b1</span>
+      <span class="verify-btn">[ Verify — Hash selbst nachrechnen ]</span>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span class="chain"><b>Beweiskette:</b> erfassen → archivieren → hashen → WORM · jeder Treffer nachrechenbar</span>
+    <span>„Ich will Zeugnis ablegen bis zum letzten." · AGPL-3.0 · wortlaut.io</span>
+  </div>
+</body></html>
