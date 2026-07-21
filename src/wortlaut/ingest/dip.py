@@ -149,8 +149,13 @@ class DipPlenarprotokollAdapter:
         return extract_text(raw.raw_bytes)
 
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
-        """Kanonischer Text → je Redebeitrag ein SpanDraft (Offset-invariant, #41)."""
-        spoken_at, locator = parse_header(normalized)
+        """Kanonischer Text → je Redebeitrag ein SpanDraft (Offset-invariant, #41).
+
+        Der header-weite locator (protokoll/sitzung) wird PRO SPAN kopiert und um
+        den Tagesordnungspunkt der jeweiligen Position ergänzt (#51) — der geteilte
+        Basis-Dict wird nie mutiert.
+        """
+        spoken_at, base_locator = parse_header(normalized)
         return [
             SpanDraft(
                 verbatim_text=seg.verbatim_text,
@@ -158,7 +163,7 @@ class DipPlenarprotokollAdapter:
                 text_end=seg.text_end,
                 speaker_hint={"name": seg.name, "party": seg.party},
                 spoken_at=spoken_at,
-                locator=locator,
+                locator={**base_locator, "tagesordnungspunkt": seg.tagesordnungspunkt},
                 permalink=raw.origin_url,
             )
             for seg in segment_speeches(normalized)

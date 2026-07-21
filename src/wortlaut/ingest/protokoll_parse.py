@@ -17,10 +17,14 @@ import pymupdf
 MAX_PDF_BYTES = 25 * 1024 * 1024  # 25 MiB — Zip-Bomb-/DoS-Schranke
 MAX_PDF_PAGES = 500  # Plenarprotokolle sind < 300 Seiten
 
-# 'Abg. <Name> (<Fraktion>):' ODER Präsidiums-Marker '<Präsident...>:'
+# 'Abg. <Name> (<Fraktion>):' ODER Präsidiums-Marker '<Präsident...>:'.
+# ^ + MULTILINE (#51): Marker beginnen eine Zeile — inline-Zwischenrufe
+# '(Zuruf des Abg. X [SPD]: …)' stehen mitten in der Zeile und werden dadurch
+# NIE als neuer Sprecher-Turn gelesen (bleiben Teil des verbatim_text, AC2).
 SPEAKER_MARKER = re.compile(
-    r"Abg\.\s+(?P<name>[^(\n]+?)\s+\((?P<party>[^)\n]+)\):"
-    r"|(?P<pres>Vizepräsident(?:in)?|Präsident(?:in)?)\b[^:\n]*:"
+    r"^(?:Abg\.\s+(?P<name>[^(\n]+?)\s+\((?P<party>[^)\n]+)\):"
+    r"|(?P<pres>Vizepräsident(?:in)?|Präsident(?:in)?)\b[^:\n]*:)",
+    re.MULTILINE,
 )
 
 _MONTHS = {
@@ -42,6 +46,8 @@ _DATE_RE = re.compile(r"den (\d{1,2})\. (\w+) (\d{4})")
 # backtrackt sonst quadratisch (S8786). Sitzungs-/Protokollnummern sind klein.
 _PROTOKOLL_RE = re.compile(r"Plenarprotokoll (\d{1,3}/\d{1,4})")
 _SITZUNG_RE = re.compile(r"(\d{1,4})\. Sitzung")
+# Tagesordnungspunkt-/Zusatzpunkt-Header beginnen eine Zeile (Struktur des Protokolls).
+_TOP_HEADER = re.compile(r"^(?:Tagesordnungspunkt|Zusatzpunkt)\s+(\d{1,3})", re.MULTILINE)
 _HYPHEN_BREAK = re.compile(r"-\n(\w)")
 _PAGENUM_LINE = re.compile(r"\s*\d+\s*")
 _INLINE_WS = re.compile(r"[ \t]+")
@@ -57,6 +63,7 @@ class SpeechSegment:
     text_end: int
     name: str
     party: str
+    tagesordnungspunkt: str | None  # aktueller TOP für die Position dieses Beitrags (#51)
 
 
 def extract_text(raw_bytes: bytes) -> str:
@@ -113,11 +120,23 @@ def parse_header(normalized: str) -> tuple[str, dict[str, object]]:
     return spoken_at, locator
 
 
+def _top_before(offset: int, tops: list[tuple[int, str]]) -> str | None:
+    """Der letzte TOP-Header VOR ``offset`` (die Debatte, unter der der Beitrag steht)."""
+    current: str | None = None
+    for pos, label in tops:
+        if pos >= offset:
+            break
+        current = label
+    return current
+
+
 def segment_speeches(normalized: str) -> list[SpeechSegment]:
     """Segmentiert an Redner-Markern; Präsidium ausgeschlossen (MVP).
 
     Für jeden Beitrag gilt strikt ``normalized[text_start:text_end] == verbatim_text``.
+    Jeder Beitrag trägt den Tagesordnungspunkt seiner Position (#51).
     """
+    tops = [(m.start(), m.group(1)) for m in _TOP_HEADER.finditer(normalized)]
     markers = list(SPEAKER_MARKER.finditer(normalized))
     segments: list[SpeechSegment] = []
     for i, m in enumerate(markers):
@@ -136,6 +155,7 @@ def segment_speeches(normalized: str) -> list[SpeechSegment]:
                 text_end=end,
                 name=(m.group("name") or "").strip(),
                 party=(m.group("party") or "").strip(),
+                tagesordnungspunkt=_top_before(start, tops),
             )
         )
     return segments
