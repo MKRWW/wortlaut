@@ -16,10 +16,13 @@ source_modules =
 forbidden_modules =
     wortlaut.serving
 
-# Ticket #7: pipeline ORCHESTRIERT (darf ingest/evidence/archive/store importieren),
-# aber niemand importiert pipeline — Abhängigkeiten zeigen nach innen (R-ARCH-02).
-[importlinter:contract:niemand-importiert-pipeline]
-name = Niemand importiert den Pipeline-Layer
+# Ticket #7/#43: pipeline ORCHESTRIERT (darf ingest/evidence/archive/store importieren);
+# die INNEREN Layer importieren pipeline nie (Abhängigkeiten zeigen nach innen, R-ARCH-02).
+# Ausnahme (#43): `serving` ist der ÄUSSERSTE Layer und darf `pipeline` konsumieren
+# (reuse verify_source, #8) — serving → pipeline → store/evidence/archive bleibt azyklisch.
+# Dass serving keinen LLM-/Ausgabetext erzeugt, erzwingt check_no_llm_output (R-SEC-04).
+[importlinter:contract:innere-layer-importieren-nicht-pipeline]
+name = Innere Layer importieren den Pipeline-Layer nicht
 type = forbidden
 source_modules =
     wortlaut.ingest
@@ -27,7 +30,6 @@ source_modules =
     wortlaut.store
     wortlaut.retrieval
     wortlaut.archive
-    wortlaut.serving
 forbidden_modules =
     wortlaut.pipeline
 
