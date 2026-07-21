@@ -26,6 +26,13 @@ POLL_INTERVAL_SECONDS = 5.0
 CE_TASK_TIMEOUT_SECONDS = 300.0
 _TERMINAL_CE_STATUS = frozenset({"SUCCESS", "FAILED", "CANCELED"})
 
+# Nach CE-Task=SUCCESS liegt der issues/search-Index kurz zurück (in #42/PR#52 in
+# BEIDEN Richtungen beobachtet: false-green und false-red). Darum erst setten lassen
+# und dann auf einen stabilen Wert konvergieren, statt einmal sofort abzufragen.
+INDEX_SETTLE_SECONDS = 12.0
+STABLE_READS_REQUIRED = 3
+MAX_STABILIZE_SECONDS = 90.0
+
 
 def _read_report_task(path: Path) -> dict[str, str]:
     """Parst die key=value-Zeilen, die der Sonar-Scanner nach dem Scan ablegt."""
@@ -80,6 +87,39 @@ def _fetch_open_issues(
     return int(payload.get("total", 0)), issues
 
 
+def _fetch_stable_issues(
+    server_url: str, project_key: str, pr_number: str, token: str
+) -> tuple[int, list[dict[str, Any]]]:
+    """Fragt issues/search, bis der ``total`` über mehrere Abfragen stabil ist.
+
+    Gegen den Indizierungs-Lag nach CE-SUCCESS: erst ``INDEX_SETTLE_SECONDS`` warten,
+    dann pollen, bis ``STABLE_READS_REQUIRED`` aufeinanderfolgende Abfragen denselben
+    ``total`` liefern. Konvergiert es nicht bis ``MAX_STABILIZE_SECONDS``, wird der
+    zuletzt gelesene Wert genommen (mit Warnung) — der manuelle Check bleibt Backstop.
+    """
+    time.sleep(INDEX_SETTLE_SECONDS)
+    deadline = time.monotonic() + MAX_STABILIZE_SECONDS
+    last_total = -1
+    stable = 0
+    total, issues = _fetch_open_issues(server_url, project_key, pr_number, token)
+    while True:
+        if total == last_total:
+            stable += 1
+        else:
+            stable = 1
+            last_total = total
+        if stable >= STABLE_READS_REQUIRED:
+            return total, issues
+        if time.monotonic() > deadline:
+            print(
+                f"WARN: Issue-Total nicht stabilisiert (letzter Wert {total})",
+                file=sys.stderr,
+            )
+            return total, issues
+        time.sleep(POLL_INTERVAL_SECONDS)
+        total, issues = _fetch_open_issues(server_url, project_key, pr_number, token)
+
+
 def _format_issue(issue: dict[str, Any]) -> str:
     component = str(issue.get("component", "")).partition(":")[2]
     line = issue.get("line", "?")
@@ -105,7 +145,7 @@ def main(argv: list[str]) -> int:
         raise SystemExit("FEHLER: report-task.txt ohne projectKey/ceTaskUrl (fail closed)")
 
     _wait_for_analysis(ce_task_url, token)
-    total, issues = _fetch_open_issues(server_url, project_key, pr_number, token)
+    total, issues = _fetch_stable_issues(server_url, project_key, pr_number, token)
 
     if total > 0:
         print(f"ROT: {total} offene(s) SonarCloud-Issue(s) in PR #{pr_number} — Merge-Latte")
