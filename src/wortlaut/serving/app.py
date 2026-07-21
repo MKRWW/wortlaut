@@ -4,9 +4,11 @@ KI-frei (R-SEC-04): kein LLM/Modell-Call im Ausgabepfad — Ausgabe ist ausschli
 wörtlicher DB-Span + Beleg. Der harte Server-Filter und das Anti-Halluzinations-Gate
 sitzen im Read-Layer (store.read); hier nur Mapping auf die Antwort-Schemas + Verify
 (reuse verify_source, #8). Rate-Limit/CORS-Edge macht Cloudflare (Deploy, Nicht-Ziel).
-"""
 
-from __future__ import annotations
+Hinweis: KEIN ``from __future__ import annotations`` — FastAPI muss die Depends/Query
+aus den echten Annotationsobjekten lesen (die die lokalen get_session/SessionDep zur
+Definitionszeit einfangen); als Strings wären lokale Namen nicht auflösbar → 422.
+"""
 
 import re
 from collections.abc import AsyncIterator
