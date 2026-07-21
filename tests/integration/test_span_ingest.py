@@ -257,16 +257,19 @@ async def test_span_immutable_and_reingest_no_duplicate(
             text("SELECT id FROM span WHERE source_id = CAST(:s AS uuid) LIMIT 1"),
             {"s": str(first.source_id)},
         )
+    # nur EINE werfende Invocation je raises-Block (S5778): Parameter vorab bauen
+    upd_params = {"i": str(span_id)}
+    del_params = {"i": str(span_id)}
 
     # AC7: UPDATE auf span wirft (Append-only-Trigger #40) — eigene Transaktion,
     # da eine gescheiterte Anweisung die PG-Transaktion aborted (Lektion #40).
     async with fresh_sessions() as session:
         upd = text("UPDATE span SET permalink = 'x' WHERE id = CAST(:i AS uuid)")
         with pytest.raises(DBAPIError):
-            await session.execute(upd, {"i": str(span_id)})
+            await session.execute(upd, upd_params)
 
     # AC7: DELETE auf span wirft ebenfalls — wieder eigene Transaktion.
     async with fresh_sessions() as session:
         dele = text("DELETE FROM span WHERE id = CAST(:i AS uuid)")
         with pytest.raises(DBAPIError):
-            await session.execute(dele, {"i": str(span_id)})
+            await session.execute(dele, del_params)
