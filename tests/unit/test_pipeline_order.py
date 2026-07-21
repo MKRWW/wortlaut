@@ -44,11 +44,11 @@ class FakeAdapter:
 
     def normalize(self, raw: RawSource) -> str:
         self.normalize_calls += 1
-        raise AssertionError("normalize must not be called in Phase 0")
+        return ""
 
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
         self.parse_calls += 1
-        raise AssertionError("parse must not be called in Phase 0")
+        return []
 
 
 class FakeArchiver:
@@ -209,8 +209,8 @@ async def test_archive_total_failure_no_insert() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parse_never_called_phase0() -> None:
-    """AC7: Nach Happy-Path wurde parse/normalize NIE aufgerufen."""
+async def test_normalize_and_parse_called_phase1() -> None:
+    """Phase-1 (#42): Happy-Path ruft normalize genau vor dem Insert und parse danach."""
     order: list[str] = []
     test_hash = "c" * 64
     test_uuid = uuid4()
@@ -252,8 +252,10 @@ async def test_parse_never_called_phase0() -> None:
                         ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
                     )
 
-    assert adapter.parse_calls == 0
-    assert adapter.normalize_calls == 0
+    # Phase-1: normalize (liefert "") + parse (liefert []) werden je einmal aufgerufen;
+    # da parse [] liefert, entstehen keine Spans (Insert-Reihenfolge unverändert).
+    assert adapter.normalize_calls == 1
+    assert adapter.parse_calls == 1
 
 
 @pytest.mark.asyncio

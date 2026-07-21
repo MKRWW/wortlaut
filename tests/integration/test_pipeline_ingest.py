@@ -75,10 +75,12 @@ class FakeIngestAdapter:
         raise AssertionError("discover must not be called")
 
     def normalize(self, raw: RawSource) -> str:
-        raise AssertionError("normalize must not be called in Phase 0")
+        # Phase-1-Ingest ruft normalize; dieser Fake liefert leeren Text → keine Spans
+        # (die Span-Erzeugung selbst prüft test_span_ingest.py mit echter Fixture).
+        return ""
 
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
-        raise AssertionError("parse must not be called in Phase 0")
+        return []
 
 
 # ── Helper ─────────────────────────────────────────────────────────────

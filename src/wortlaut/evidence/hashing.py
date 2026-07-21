@@ -20,3 +20,11 @@ def content_hash_stream(chunks: Iterable[bytes]) -> str:
     for chunk in chunks:
         h.update(chunk)
     return h.hexdigest()
+
+
+def span_hash(verbatim_text: str) -> str:
+    """SHA-256 über den ``verbatim_text`` (UTF-8) — Beweisanker je Span (#42).
+
+    Wiederverwendung von :func:`content_hash`; 64-stelliger lowercase-Hex.
+    """
+    return content_hash(verbatim_text.encode("utf-8"))
