@@ -6,7 +6,7 @@ raw_bytes_ref/WORM-Pfade/Pipeline-Interna/machine-Spans (datamodel §9).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -111,4 +111,4 @@ class SourceEvidence(BaseModel):
     archive_today: str | None
     byte_size: int
     mime_type: str
-    retrieved_at: date
+    retrieved_at: datetime

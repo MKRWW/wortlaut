@@ -10,7 +10,7 @@ dynamischer Aufbau aus Eingaben (Injection-frei). Kern-intern (store).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -45,14 +45,16 @@ _SPAN_COLS = (
     "src.archive_today, src.content_hash, src.rights_basis, st.verification"
 )
 
-# Optionale Filter immer gebunden (None ⇒ no-op) → fester SQL-String.
+# Optionale Filter immer gebunden (None ⇒ no-op) → fester SQL-String. Beide Seiten
+# der Filter casten: asyncpg kann den Typ eines nackten ``$n IS NULL`` sonst nicht
+# bestimmen (AmbiguousParameterError).
 _SEARCH_WHERE = (
     f"{_PUBLIC_FILTER} "
     "AND sp.fts @@ to_tsquery('german', :q) "
-    "AND (:party IS NULL OR m.party = :party) "
-    "AND (:speaker IS NULL OR spk.full_name = :speaker) "
-    "AND (:date_from IS NULL OR sp.spoken_at >= CAST(:date_from AS date)) "
-    "AND (:date_to IS NULL OR sp.spoken_at <= CAST(:date_to AS date))"
+    "AND (CAST(:party AS text) IS NULL OR m.party = CAST(:party AS text)) "
+    "AND (CAST(:speaker AS text) IS NULL OR spk.full_name = CAST(:speaker AS text)) "
+    "AND (CAST(:date_from AS date) IS NULL OR sp.spoken_at >= CAST(:date_from AS date)) "
+    "AND (CAST(:date_to AS date) IS NULL OR sp.spoken_at <= CAST(:date_to AS date))"
 )
 
 _SEARCH_COUNT_SQL = text(f"SELECT count(*) {_FROM_JOINS} WHERE {_SEARCH_WHERE}")
@@ -145,7 +147,7 @@ class SourceRow:
     archive_today: str | None
     byte_size: int
     mime_type: str
-    retrieved_at: date
+    retrieved_at: datetime
 
 
 def _span_row(m: Any) -> SpanRow:
@@ -184,12 +186,14 @@ async def search_spans(
     session: AsyncSession, criteria: SearchCriteria
 ) -> tuple[list[SpanRow], int]:
     """FTS-Suche über span.fts + harte Filter; liefert (Treffer, Gesamtzahl)."""
+    # Date-Objekte direkt binden: mit CAST(:d AS date) erwartet asyncpg ein
+    # datetime.date, keinen isoformat-String.
     params: dict[str, object] = {
         "q": criteria.q,
         "party": criteria.party,
         "speaker": criteria.speaker,
-        "date_from": criteria.date_from.isoformat() if criteria.date_from else None,
-        "date_to": criteria.date_to.isoformat() if criteria.date_to else None,
+        "date_from": criteria.date_from,
+        "date_to": criteria.date_to,
     }
     total = await session.scalar(_SEARCH_COUNT_SQL, params)
     result = await session.execute(
