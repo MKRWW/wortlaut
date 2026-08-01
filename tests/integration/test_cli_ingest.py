@@ -149,7 +149,8 @@ async def test_end_to_end_single_source(
                 text("SELECT count(*) FROM span WHERE source_id = :s"),
                 {"s": source_id},
             )
-            assert span_count is not None and int(span_count) >= 1
+            assert span_count is not None
+            assert int(span_count) >= 1
 
             report = await verify_source(source_id, session=session, worm=worm)
             assert report.ok
