@@ -17,12 +17,13 @@ import pymupdf
 MAX_PDF_BYTES = 25 * 1024 * 1024  # 25 MiB — Zip-Bomb-/DoS-Schranke
 MAX_PDF_PAGES = 500  # Plenarprotokolle sind < 300 Seiten
 
-# 'Abg. <Name> (<Fraktion>):' ODER Präsidiums-Marker '<Präsident...>:'.
-# ^ + MULTILINE (#51): Marker beginnen eine Zeile — inline-Zwischenrufe
-# '(Zuruf des Abg. X [SPD]: …)' stehen mitten in der Zeile und werden dadurch
-# NIE als neuer Sprecher-Turn gelesen (bleiben Teil des verbatim_text, AC2).
+# '<Name> (<Fraktion>):' ODER Präsidiums-Marker '(Vize)Präsident(in) <Name>:'.
+# Reales BT-Stenoformat (belegt an WP21/90): der Redebeitrag trägt KEIN 'Abg.'-Präfix
+# (das steht nur in Zwischenrufen '(Zuruf des Abg. X [SPD]: …)'). ^ + MULTILINE (#51):
+# Marker beginnen eine Zeile; der Namens-Zeichensatz [^(\n] verhindert, dass ein
+# mit '(' startender Zwischenruf je als Sprecher-Turn gelesen wird (bleibt verbatim, AC2).
 SPEAKER_MARKER = re.compile(
-    r"^(?:Abg\.\s+(?P<name>[^(\n]+?)\s+\((?P<party>[^)\n]+)\):"
+    r"^(?:(?P<name>[^(\n]+?)\s+\((?P<party>[^)\n]+)\):"
     r"|(?P<pres>Vizepräsident(?:in)?|Präsident(?:in)?)\b[^:\n]*:)",
     re.MULTILINE,
 )

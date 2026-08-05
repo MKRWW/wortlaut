@@ -45,7 +45,7 @@ def test_normalize_deterministic() -> None:  # AC1
     first = adapter.normalize(raw)
     second = adapter.normalize(raw)
     assert first == second  # deterministisch: gleiche Bytes → gleicher Text
-    assert "Abg. Dr. Max Mustermann (AfD):" in first
+    assert "Dr. Max Mustermann (AfD):" in first
 
 
 def test_normalize_two_column_order() -> None:  # AC2
