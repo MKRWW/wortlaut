@@ -5,7 +5,7 @@ reproduzierbar. Die *korrekte* Lesereihenfolge ist links-komplett-dann-rechts;
 eine naiv y-sortierte Extraktion würde die Spalten interleaven (AC2).
 
 Enthält: Protokoll-Kopf (Datum + Nr.), einen Präsidiums-Marker (→ kein SpanDraft),
-zwei Abg.-Marker (AfD + SPD). Neu bauen:
+zwei Sprecher-Marker '<Name> (<Fraktion>):' (AfD + SPD, reales BT-Format, kein 'Abg.'). Neu bauen:
     python tests/fixtures/dip/_make_zweispaltiges_protokoll.py <ausgabe.pdf>
 """
 
@@ -27,13 +27,13 @@ LEFT: list[str] = [
     "Ich eröffne die Sitzung. Das Wort",
     "hat die Abgeordnete Musterfrau.",
     "",
-    "Abg. Dr. Max Mustermann (AfD):",
+    "Dr. Max Mustermann (AfD):",
     "Sehr geehrter Herr Präsident, meine",
     "Damen und Herren, wir lehnen diesen",
     "Gesetzentwurf entschieden ab.",
 ]
 RIGHT: list[str] = [
-    "Abg. Erika Musterfrau (SPD):",
+    "Erika Musterfrau (SPD):",
     "Frau Präsidentin, der vorliegende",
     "Antrag verdient die Unterstützung",
     "dieses hohen Hauses ohne Vorbehalt.",
