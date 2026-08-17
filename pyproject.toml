@@ -23,6 +23,11 @@ dependencies = [
   "httpx>=0.27",
   "pymupdf>=1.28.0",
   "fastapi>=0.115",
+  # ASGI-Server fuer den Serving-Entrypoint (#81). Bewusst OHNE [standard]: das
+  # zieht uvloop/httptools/websockets/watchfiles nach — C-Extensions und
+  # Supply-Chain-Flaeche, die eine read-only JSON-API hinter Cloudflare nicht
+  # braucht. Runtime-Dep (nicht dev), weil das prod-Image mit --no-dev baut.
+  "uvicorn>=0.30",
   # RFC-3161-Zeitstempel (#76, ADR-0008). Untergrenze ist NICHT kosmetisch:
   # CVE-2026-33753 (<= 1.0.5) hebelte die TSA-Identitaetspruefung per untergeschobenem
   # Zertifikat im PKCS#7-Bag aus — genau die Angriffsklasse, gegen die wir pinnen.

@@ -138,6 +138,34 @@ jobs:
           if docker run --rm wortlaut:ci env | grep -Eiq 'WORTLAUT_.*(KEY|SECRET|PASSWORD)'; then echo "AC5 FAIL: Secret-ENV im Image"; exit 1; fi
           if grep -Eiq '(KEY|SECRET|PASSWORD)[[:space:]]*=' Dockerfile; then echo "AC5 FAIL: hartkodiertes Secret im Dockerfile"; exit 1; fi
           echo "docker smoke OK (AC2-AC5)"
+      # Serve-Smoke (#81 AC8): der Container muss die Read-API wirklich fahren. Die
+      # Dummy-ENV zeigt absichtlich ins Leere — /healthz (Liveness, kein DB-Zugriff)
+      # muss trotzdem 200 liefern und /readyz (Readiness, SELECT 1) genau 503. Damit
+      # ist beides bewiesen: der Server laeuft UND der Readiness-Check prueft wirklich.
+      - name: Serve-Smoke (#81, AC8)
+        run: |
+          set -euo pipefail
+          docker run --rm wortlaut:ci python -m wortlaut serve --help | grep -q 'usage: wortlaut serve'
+          docker run -d --name wortlaut-serve -p 18080:8000 \
+            -e WORTLAUT_DB_DSN=postgresql+asyncpg://dummy:dummy@127.0.0.1:5432/dummy \
+            -e WORTLAUT_WORM_ENDPOINT=127.0.0.1:9000 \
+            -e WORTLAUT_WORM_ACCESS_KEY=dummy \
+            -e WORTLAUT_WORM_SECRET_KEY=dummy \
+            wortlaut:ci python -m wortlaut serve
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz | grep -q '"status":"ok"'; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != "1" ]; then
+            echo "AC8 FAIL: /healthz antwortet nicht mit 200/ok"; docker logs wortlaut-serve || true
+            docker rm -f wortlaut-serve >/dev/null 2>&1 || true; exit 1
+          fi
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/readyz)"
+          docker logs wortlaut-serve 2>&1 | tail -5
+          docker rm -f wortlaut-serve >/dev/null 2>&1 || true
+          [ "$code" = "503" ] || { echo "AC8 FAIL: /readyz lieferte $code statt 503 (Readiness prueft die DB nicht)"; exit 1; }
+          echo "serve smoke OK (AC8): /healthz 200, /readyz 503"
       # Publish nach ghcr.io NUR bei push auf develop/main (nicht aus PRs), nur nach gruenem Smoke (#68).
       - name: Login ghcr.io (nur push, nicht PR)
         if: github.event_name == 'push'
