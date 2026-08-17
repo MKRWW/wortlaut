@@ -83,8 +83,10 @@ async def test_all_tsa_fail_raises() -> None:  # AC7
     )
     stamper = FallbackTimeStamper([a, b])
 
+    # raw ausserhalb des raises-Blocks: dort steht genau EIN werfender Aufruf (Sonar S5778).
+    raw = _raw()
     with pytest.raises(TimestampError):
-        await stamper.stamp(_raw(), content_hash=_MESSAGE_HASH)
+        await stamper.stamp(raw, content_hash=_MESSAGE_HASH)
 
     assert len(a_requests) == 1
     assert len(b_requests) == 1
@@ -96,6 +98,10 @@ async def test_all_tsa_fail_raises() -> None:  # AC7
 async def test_response_hardening_rejects() -> None:  # AC8
     """AC8: 200 mit falschem Content-Type / >64 KiB / 302-Redirect → TimestampError,
     kein Token wird zurückgegeben."""
+    # raw ausserhalb aller raises-Bloecke: dort steht je genau EIN werfender
+    # Aufruf (Sonar S5778).
+    raw = _raw()
+
     # (a) 200 + gültig aussehender Body, aber Content-Type: text/html
     tsa, _ = _tsa_with(
         "freetsa",
@@ -104,7 +110,7 @@ async def test_response_hardening_rejects() -> None:  # AC8
         ),
     )
     with pytest.raises(TimestampError) as exc:
-        await tsa.stamp(_raw(), content_hash=_MESSAGE_HASH)
+        await tsa.stamp(raw, content_hash=_MESSAGE_HASH)
     assert exc.value.reason == "content_type"
 
     # (b) 200 + korrektem Content-Type, aber >64 KiB
@@ -115,7 +121,7 @@ async def test_response_hardening_rejects() -> None:  # AC8
         ),
     )
     with pytest.raises(TimestampError) as exc2:
-        await tsa2.stamp(_raw(), content_hash=_MESSAGE_HASH)
+        await tsa2.stamp(raw, content_hash=_MESSAGE_HASH)
     assert exc2.value.reason == "oversize"
 
     # (c) 302 mit Location (Redirects werden nicht gefolgt)
@@ -126,7 +132,7 @@ async def test_response_hardening_rejects() -> None:  # AC8
         ),
     )
     with pytest.raises(TimestampError) as exc3:
-        await tsa3.stamp(_raw(), content_hash=_MESSAGE_HASH)
+        await tsa3.stamp(raw, content_hash=_MESSAGE_HASH)
     assert exc3.value.reason == "http_status"
     assert exc3.value.status_code == 302
     await tsa.aclose()
@@ -141,8 +147,9 @@ async def test_token_for_foreign_imprint_rejected() -> None:  # AC9
     other_hash = "0" * 64  # ein anderer, gültiges 64-stelliges Hex
 
     tsa, _ = _tsa_with("freetsa", handler=lambda _req: _ok_response(_token("freetsa")))
+    raw = _raw()  # ausserhalb des raises-Blocks (Sonar S5778)
     with pytest.raises(TimestampError) as exc:
-        await tsa.stamp(_raw(), content_hash=other_hash)
+        await tsa.stamp(raw, content_hash=other_hash)
     assert exc.value.reason == "mismatch"
     await tsa.aclose()
 
