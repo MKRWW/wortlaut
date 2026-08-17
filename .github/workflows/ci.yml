@@ -154,7 +154,9 @@ jobs:
             wortlaut:ci python -m wortlaut serve
           ok=0
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/healthz | grep -q '"status":"ok"'; then ok=1; break; fi
+            # -fs (ohne -S): die Retries vor dem Start sollen keine irrefuehrende
+            # curl-Fehlerzeile ins CI-Log schreiben — der Fehlerfall wird unten gemeldet.
+            if curl -fs http://127.0.0.1:18080/healthz | grep -q '"status":"ok"'; then ok=1; break; fi
             sleep 1
           done
           if [ "$ok" != "1" ]; then
