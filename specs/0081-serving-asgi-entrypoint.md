@@ -357,14 +357,17 @@ Zusätzliche Imports: `import asyncio`, `from sqlalchemy import text`,
         try:
             async with asyncio.timeout(_READY_TIMEOUT_SECONDS):
                 await session.execute(text("SELECT 1"))
-        except (SQLAlchemyError, OSError, TimeoutError) as e:
+        except (SQLAlchemyError, OSError) as e:
             raise HTTPException(status_code=503, detail="not_ready") from e
         return HealthStatus(status="ready")
 ```
 - `detail` ist **exakt** `"not_ready"` — **nie** `str(e)` (das würde Host/DSN durchreichen).
-- Die Exception-Liste ist **genau diese drei** (SQLAlchemy wickelt DBAPI-Fehler ein, `OSError`
-  deckt rohe Socket-/DNS-Fehler, `TimeoutError` ist der eigene Timeout). **Kein** blankes
-  `except Exception`.
+- Die Exception-Liste ist **genau diese zwei** (SQLAlchemy wickelt DBAPI-Fehler ein, `OSError`
+  deckt rohe Socket-/DNS-Fehler **und** den Timeout). **Kein** blankes `except Exception`.
+  > **Review-Nachtrag (Architekt):** Der erste Entwurf nannte zusätzlich `TimeoutError` — das ist
+  > **redundant** (Sonar `python:S5713`, im PR-Gate gemessen): der eingebaute `TimeoutError` erbt
+  > seit 3.3 von `OSError`, und seit 3.11 ist `asyncio.TimeoutError` **derselbe** Typ. Der Timeout
+  > wird also weiterhin gefangen; der AC6-Timeout-Test beweist das.
 - **Sonst nichts** in dieser Datei ändern: `_find_match`, `_span_result`, alle `/v1/*`-Routen,
   die CORS-Middleware und die Signatur von `create_app` bleiben **wörtlich** wie sie sind.
 - Der Hinweis im Modul-Docstring zu „kein `from __future__ import annotations`" gilt weiter —

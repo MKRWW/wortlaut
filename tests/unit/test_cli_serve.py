@@ -7,7 +7,6 @@ erreicht (serve konstruiert keinen Store).
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
@@ -17,13 +16,15 @@ from wortlaut.cli import main
 
 
 @pytest.fixture
-def serve_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Pflicht-ENV fuer ``serve`` (Dummy-Werte, keine Secrets)."""
+def serve_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pflicht-ENV fuer ``serve`` (Dummy-Werte, keine Secrets).
+
+    Kein ``yield``: ``monkeypatch`` raeumt selbst auf, ein Teardown gibt es nicht.
+    """
     monkeypatch.setenv("WORTLAUT_DB_DSN", "postgresql+asyncpg://user@host/db")
     monkeypatch.setenv("WORTLAUT_WORM_ENDPOINT", "minio.example.com")
     monkeypatch.setenv("WORTLAUT_WORM_ACCESS_KEY", "ak")
     monkeypatch.setenv("WORTLAUT_WORM_SECRET_KEY", "sk")
-    yield
 
 
 def test_serve_passes_import_string_and_factory(

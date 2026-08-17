@@ -150,7 +150,10 @@ def create_app(sessionmaker: async_sessionmaker[AsyncSession], worm: WormStore) 
         try:
             async with asyncio.timeout(_READY_TIMEOUT_SECONDS):
                 await session.execute(text("SELECT 1"))
-        except (SQLAlchemyError, OSError, TimeoutError) as e:
+        # OSError deckt den Timeout MIT ab: asyncio.timeout wirft den eingebauten
+        # TimeoutError, und der erbt seit 3.3 von OSError (asyncio.TimeoutError ist
+        # seit 3.11 derselbe Typ). TimeoutError zusaetzlich zu nennen waere redundant.
+        except (SQLAlchemyError, OSError) as e:
             raise HTTPException(status_code=503, detail="not_ready") from e
         return HealthStatus(status="ready")
 
