@@ -338,7 +338,9 @@ class VerifyReport:
     archive_wayback: str | None
     archive_today: str | None
     # NEU (additiv, ans Ende):
-    timestamp_status: Literal["ok", "mismatch", "untrusted", "malformed", "missing"] = "missing"
+    timestamp_status: Literal[
+        "ok", "mismatch", "untrusted", "malformed", "missing", "unreadable"
+    ] = "missing"
     timestamp_tsa: str | None = None
     timestamp_gen_time: datetime | None = None
 
@@ -492,10 +494,12 @@ beglaubigt, und je TSA kollisionsfrei. Der Namensraum der Rohbytes (blanker Hash
 - [ ] **AC12** *(Idempotenz)* — *Given* eine bereits gestempelte `source`, *When* der Pass erneut
       läuft, *Then* liefert `list_sources_without_timestamp` sie **nicht** mehr, es entsteht **keine**
       zweite Zeile, und es wird **kein** TSA-Call abgesetzt. `[integration]`
-- [ ] **AC13** *(Verify meldet ok/mismatch/missing)* — *Given* (a) eine gestempelte Quelle,
-      (b) dieselbe Quelle mit einem Token, das an einen anderen Hash bindet, (c) eine ungestempelte
-      Quelle, *When* `verify_source`, *Then* `timestamp_status` ist `ok` / `mismatch` / `missing`,
-      und `timestamp_gen_time` ist **nur** im Fall (a) gesetzt. `[integration]`
+- [ ] **AC13** *(Verify meldet ok/mismatch/missing/unreadable)* — *Given* (a) eine gestempelte
+      Quelle, (b) dieselbe Quelle mit einem Token, das an einen anderen Hash bindet, (c) eine
+      ungestempelte Quelle, (d) eine Quelle mit Zeile, deren WORM-Token **nicht lesbar** ist,
+      *When* `verify_source`, *Then* `timestamp_status` ist `ok` / `mismatch` / `missing` /
+      `unreadable`, und `timestamp_gen_time` ist **nur** im Fall (a) gesetzt. Fall (d) darf
+      **nicht** als `missing` erscheinen (§11-Nachtrag). `[integration]`
 - [ ] **AC14** *(kein Gate)* — *Given* eine Quelle **ohne** Zeitstempel, *When* `verify_source` und
       `GET /v1/spans/{id}/verify`, *Then* `ok is True` und `status == "ok"` (Hash stimmt),
       `timestamp_status == "missing"` — der fehlende Stempel degradiert **nichts**. `[integration]`
@@ -530,11 +534,15 @@ beglaubigt, und je TSA kollisionsfrei. Der Namensraum der Rohbytes (blanker Hash
 - `tests/unit/test_cli_timestamp.py` — `test_summary_and_exit_zero` → AC16 ·
   `test_circuit_breaker_aborts_run` → AC17 · `test_hash_mismatch_exit_four` → AC18
 
-**Integration (Testcontainers, echte Postgres/MinIO):**
+**Integration (Testcontainers, echte Postgres/MinIO) — legt der Architekt an:**
 - `tests/integration/test_timestamp_store.py` — Persistenz + Ref-Roundtrip → AC11 ·
-  Idempotenz über zwei Läufe → AC12 · UPDATE/DELETE scheitert → **AC15**
-- `tests/integration/test_verify_integration.py` *(erweitert)* — ok / mismatch / missing → AC13 ·
-  `ok is True` trotz fehlendem Stempel → **AC14**
+  Idempotenz über zwei Läufe → AC12 · ok/mismatch/missing/unreadable → AC13 ·
+  `ok is True` trotz fehlendem Stempel → **AC14** · UPDATE/DELETE scheitert → **AC15**
+
+> Der Kniff, der diese Tests aussagekräftig macht: die Test-Quelle bekommt als Rohbytes **genau**
+> den Inhalt von `tests/fixtures/tsa/message.bin`. Damit ist ihr `content_hash` byte-identisch mit
+> dem `messageImprint` der **echten** Fixture-Tokens — die Bindung Token↔Quelle wird gegen eine
+> reale TSA-Antwort geprüft, ohne je das Netz anzufassen (R-TEST-03).
 
 **Invarianten (Pflicht, R-DATA):** `source` und `span` bekommen **keinen** neuen UPDATE-/DELETE-Pfad;
 die bestehenden Append-only-Trigger-Tests bleiben unverändert grün. Die neue Tabelle bringt ihren
@@ -777,9 +785,17 @@ alle bestehenden positionalen Konstruktionen in Tests unverändert gültig bleib
 Nach der bestehenden Hash-Prüfung — und **ohne** `ok`/`status` zu verändern (§3.4):
 - `rows = await get_timestamps_for_source(session, source_id)`; leer ⇒ Felder bleiben auf
   `"missing"`/`None`.
-- sonst **die erste** Zeile nehmen: `token = await worm.get(row.token_ref)` (Fehler ⇒
-  `timestamp_status = "missing"` + WARNING; ein unlesbares Token ist ein fehlender Nachweis, nie ein
-  gültiger), dann
+- sonst **die erste** Zeile nehmen: `token = await worm.get(row.token_ref)`. Schlägt der WORM-Read
+  fehl ⇒ `timestamp_status = "unreadable"` (**nicht** `"missing"`) + WARNING, `timestamp_tsa` wird
+  trotzdem gesetzt.
+  > **Warum ein eigener Status (Review-Nachtrag):** „Zeile existiert, Token nicht lesbar" und „nie
+  > gestempelt" sind **nicht** dasselbe, und die Verwechslung wäre still und dauerhaft:
+  > `list_sources_without_timestamp` geht nach **Zeilen-Existenz**, die Quelle ist also nicht mehr
+  > „pending" und wird **nie wieder** gestempelt — während `/verify` „missing" meldet. Der
+  > Betreiber ließe den Pass laufen, bekäme `pending=0` und hielte das für in Ordnung. Ein
+  > zerstörter Nachweis muss als zerstörter Nachweis sichtbar sein.
+
+  dann
   `verdict = verify_token(token, content_hash=source.content_hash, tsa_name=row.tsa_name)` und
   `timestamp_status/tsa/gen_time` daraus füllen.
 - Die Rückgabe im Zweig `worm_missing` und `source_not_found` bleibt **unverändert** (kein
