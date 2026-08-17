@@ -96,7 +96,7 @@ class ArchiveError(Exception):
         self,
         service: str,            # 'wayback' | 'archive_today'
         reason: str,             # 'http_status'|'timeout'|'transport'|'no_snapshot_url'
-                                 # |'invalid_snapshot_url'|'disabled'
+                                 # |'invalid_snapshot_url'|'disabled'|'unexpected'
         *,
         status_code: int | None = None,
         transient: bool = False,
@@ -203,12 +203,12 @@ class IngestOutcome:
 ## 4. Design (kurz)
 
 **4.1 Status-Gate zuerst (behebt 🔴 + macht Retry überhaupt möglich).**
-`WaybackArchiver.archive` akzeptiert eine Snapshot-URL **nur** aus einer Erfolgsantwort:
+Eine Snapshot-URL wird **nur** aus einer Erfolgsantwort akzeptiert. Die Statusklassifikation ist
+für **beide** Dienste identisch:
 
 | Antwort | Ergebnis |
 |---|---|
-| 2xx **mit** `content-location` | Snapshot (nach Schema-/Host-Validierung) |
-| 3xx **mit** `Location` | Snapshot (nach Schema-/Host-Validierung) |
+| 2xx/3xx **mit** dienstspezifischem Snapshot-Header (s.u.) | Snapshot (nach Schema-/Host-Validierung) |
 | 429 · 408 · 5xx | `ArchiveError(reason='http_status', transient=True)` |
 | sonstige 4xx (404, 403, …) | `ArchiveError(reason='http_status', transient=False)` |
 | 2xx/3xx **ohne** verwertbaren Header | `ArchiveError(reason='no_snapshot_url', transient=False)` |
@@ -216,7 +216,20 @@ class IngestOutcome:
 | `httpx.TimeoutException` | `ArchiveError(reason='timeout', transient=True)` |
 | `httpx.TransportError` | `ArchiveError(reason='transport', transient=True)` |
 
-`ArchiveTodayArchiver` klassifiziert identisch (429 wird damit endlich als transient erkannt);
+**Die Snapshot-Header-Quelle ist dienstspezifisch** und wird **erst nach** der Statusprüfung
+gelesen — das bestehende Extraktionsverhalten bleibt dabei vollständig erhalten:
+
+| Dienst | Snapshot-Header (in dieser Reihenfolge) |
+|---|---|
+| Wayback | `Content-Location` (2xx, relativ → gegen `https://web.archive.org` auflösen), sonst `Location` bei 3xx |
+| archive.today | `Location` bei 3xx, sonst **`Refresh`-Header der Form `0; url=<snapshot>`** (der Regelfall ist **200 + Refresh**, nicht Redirect) |
+
+> ⚠️ Die `Refresh`-Zeile ist **nicht optional**: `_snapshot_from_archive_today` liest sie heute
+> ([../src/wortlaut/archive/archiver.py](../src/wortlaut/archive/archiver.py) Z. 185-192) und
+> `test_archive_today_snapshot_url_from_refresh` deckt sie ab. Wer sie beim Umbau wegkürzt, macht
+> archive.today **dauerhaft** funktionsunfähig und entwertet die in Q2 codifizierte Rest-Redundanz.
+
+`ArchiveTodayArchiver` klassifiziert damit identisch (429 wird endlich als transient erkannt);
 sein Ad-hoc-Retry entfällt zugunsten von `with_retry`.
 
 **4.2 Drosselung.** Jeder Archiver bekommt einen eigenen `RateLimiter` (getrennte Limits je
@@ -319,8 +332,11 @@ UPDATE/DELETE-Pfad auf `source`/`span` hinzu; die Append-only-Trigger-Tests blei
 und müssen grün bleiben.
 
 **Anzupassen (Signaturänderung `errors` → `failures`):** `test_partial_failure_tolerated`,
-`test_total_failure_reported` (`tests/unit/test_archiver.py`) und
-`tests/live/test_archive_live.py`. Die archive.today-Retry-Tests
+`test_total_failure_reported` (`tests/unit/test_archiver.py`), `tests/live/test_archive_live.py`
+**und `tests/unit/test_pipeline_order.py`, das `ArchiveResult(errors=…)` an drei Stellen
+konstruiert (Z. 133 `errors={}`, Z. 189 `errors={"wayback": …, "archive_today": …}`, Z. 241
+`errors={}`)** — alle drei auf `failures=` umstellen; die befüllte Variante braucht dann
+`ArchiveError`-Instanzen statt Strings. Die archive.today-Retry-Tests
 (`test_archive_today_retry_then_success`, `…_5xx_retry_then_success`, `…_5xx_twice_raises`,
 `…_timeout_twice_raises`, `…_unexpected_status_raises`) wandern auf `with_retry` +
 `ArchiveError` und müssen entsprechend erwarten.
@@ -424,18 +440,33 @@ Nach dem (ggf. Warten) `letzter_call` auf `monotonic()` setzen.
 vorhanden (`getattr`-Prüfung), sonst NO-OP.
 
 ### `src/wortlaut/archive/archiver.py` (ändern)
-- Eine Hilfsfunktion, die aus einer `httpx.Response` **entweder** die Snapshot-URL **oder**
-  einen `ArchiveError` erzeugt, exakt nach der Tabelle in §4.1. Sie ist die **einzige** Stelle,
-  die `content-location`/`Location` liest — und sie liest sie **erst nach** der Statusprüfung.
+- Eine Hilfsfunktion, die aus einer `httpx.Response` **entweder** die Snapshot-URL **oder** einen
+  `ArchiveError` erzeugt, exakt nach den beiden Tabellen in §4.1. Sie prüft **zuerst** den Status
+  und liest **danach** die Snapshot-Header — die **dienstspezifische** Header-Quelle wird ihr
+  übergeben (z.B. als Callable oder Dienst-Kennung), damit Wayback
+  `Content-Location`/`Location` und archive.today `Location`/`Refresh` behält. Die vorhandene
+  Extraktionslogik aus `_snapshot_from_archive_today` (inkl. **`Refresh`**) und aus
+  `WaybackArchiver.archive` (inkl. `urljoin` für relative `Content-Location`) wird
+  **wiederverwendet, nicht ersetzt** — sie wandert nur hinter das Status-Gate.
 - `WaybackArchiver.archive` und `ArchiveTodayArchiver.archive` bestehen danach nur noch aus:
   `await limiter.acquire()` (falls Limiter gesetzt) → HTTP-Call in `try` (httpx-Timeout- und
   Transport-Fehler in `ArchiveError` übersetzen) → Antwort durch die Hilfsfunktion. Der ganze
   Ablauf wird in `with_retry` gewickelt; `acquire()` muss **innerhalb** der wiederholten
   Operation liegen, damit auch Retries gedrosselt sind.
 - Der handgeschriebene Retry-Block und `_backoff` in `ArchiveTodayArchiver` **entfallen**.
-- `ArchiveResult.errors` heißt jetzt `failures: dict[str, ArchiveError]`; `archive_all` fängt
-  `ArchiveError` je Dienst und legt sie unter `"wayback"` bzw. `"archive_today"` ab. Ein
-  `SsrfBlocked` aus `assert_url_allowed` fliegt weiterhin **unverändert durch** (kein Abfangen).
+- `ArchiveResult.errors` heißt jetzt `failures: dict[str, ArchiveError]`; `archive_all` fängt je
+  Dienst `ArchiveError` und legt ihn unter `"wayback"` bzw. `"archive_today"` ab. Eine **andere**
+  `Exception` aus einem Archiver wird zu
+  `ArchiveError(service, reason="unexpected", transient=False)` **gewrappt** — nie durchgelassen:
+  `Archiver` ist eine `Protocol`-Naht, ein Implementierungsfehler dort (AttributeError o.ä.) darf
+  nicht den ganzen Ingest-Lauf abbrechen, muss aber strukturiert sichtbar werden. Ein
+  `SsrfBlocked` aus `assert_url_allowed` fliegt weiterhin **unverändert durch** (kein Abfangen) —
+  es entsteht **vor** den Archiver-Calls und ist ein Security-Stopp, kein Archiv-Fehler.
+  `SsrfBlocked` ist eine `Exception`-Subklasse und würde vom `unexpected`-Wrapper sonst
+  mitgefangen: der Wrapper **re-raist `SsrfBlocked` deshalb explizit**, bevor er wrappt
+  (Gürtel-und-Hosenträger, damit eine spätere Umstellung den Security-Stopp nicht stumm
+  zu einem tolerierten Archiv-Fehler degradiert). `assert_url_allowed` bleibt **außerhalb**
+  jedes `try`.
 - `_validate_snapshot_url` wirft künftig `ArchiveError(..., reason="invalid_snapshot_url")`
   statt `ValueError`.
 
