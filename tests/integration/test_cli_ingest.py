@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from unittest.mock import patch
 
@@ -169,18 +170,27 @@ async def test_end_to_end_single_source(
         await engine.dispose()
 
 
+@dataclass
+class _WaybackState:
+    """Test-LOKALER Zustand des Wayback-Fakes — kein globaler/Klassen-Zustand.
+
+    Klassenattribute wuerden zwischen Tests lecken, wenn ein Test mittendrin
+    fehlschlaegt und das Zuruecksetzen nie erreicht wird.
+    """
+
+    fail: bool = True
+    calls: int = 0
+
+
 class _ControllableWayback:
-    """Wayback-Fake, dessen Verhalten der Test ueber Klassenattribute steuert (#73/AC10)."""
+    """Wayback-Fake, dessen Verhalten der Test ueber sein `state`-Objekt steuert (#73/AC10)."""
 
-    fail = True
-    calls = 0
-
-    def __init__(self, *_a: object, **_kw: object) -> None:
-        pass
+    def __init__(self, state: _WaybackState) -> None:
+        self._state = state
 
     async def archive(self, origin_url: str) -> str:
-        type(self).calls += 1
-        if type(self).fail:
+        self._state.calls += 1
+        if self._state.fail:
             raise ArchiveError("wayback", "http_status", status_code=503, transient=True)
         return "https://web.archive.org/snap-0073-resume"
 
@@ -201,13 +211,12 @@ async def test_archive_failed_retried_on_rerun(
                              (Dedup greift vor der Archivierung).
     """
     _set_env(monkeypatch, fresh_pg_dsn, minio_config)
-    _ControllableWayback.fail = True
-    _ControllableWayback.calls = 0
+    state = _WaybackState(fail=True)
 
     async def _run_once() -> int:
         with (
             patch("wortlaut.cli.DipPlenarprotokollAdapter", _FakeCliAdapter),
-            patch("wortlaut.cli.WaybackArchiver", _ControllableWayback),
+            patch("wortlaut.cli.WaybackArchiver", lambda **_kw: _ControllableWayback(state)),
             patch("wortlaut.cli.ArchiveTodayArchiver", _FakeArchiver),
         ):
             return await _run(_ingest_args())
@@ -225,18 +234,18 @@ async def test_archive_failed_retried_on_rerun(
         # Lauf 1 — Archiv aus: die Quelle darf NICHT gespeichert werden.
         assert await _run_once() == 0
         assert await _source_count() == 0
-        assert _ControllableWayback.calls == 1
+        assert state.calls == 1
 
         # Lauf 2 — Archiv zurueck: derselbe Re-Run holt die Quelle nach.
-        _ControllableWayback.fail = False
+        state.fail = False
         assert await _run_once() == 0
         assert await _source_count() == 1
-        assert _ControllableWayback.calls == 2
+        assert state.calls == 2
 
         # Lauf 3 — bereits archiviert: Dedup greift VOR dem Archiv-Call.
         assert await _run_once() == 0
         assert await _source_count() == 1
-        assert _ControllableWayback.calls == 2, "Dedup muss vor der Archivierung greifen"
+        assert state.calls == 2, "Dedup muss vor der Archivierung greifen"
     finally:
         await engine.dispose()
 
