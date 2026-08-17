@@ -480,6 +480,16 @@ vorhanden (`getattr`-Prüfung), sonst NO-OP.
   (Gürtel-und-Hosenträger, damit eine spätere Umstellung den Security-Stopp nicht stumm
   zu einem tolerierten Archiv-Fehler degradiert). `assert_url_allowed` bleibt **außerhalb**
   jedes `try`.
+- **⚠️ Zwei Quellen von `SsrfBlocked` — nur eine ist ein Security-Stopp.** Neben
+  `assert_url_allowed(origin_url)` wirft auch `pinned_client(<host>)` `SsrfBlocked`, wenn die
+  DNS-Auflösung **unseres eigenen, konstanten Archiv-Hosts** scheitert
+  ([../src/wortlaut/archive/ssrf.py](../src/wortlaut/archive/ssrf.py) Z. 41-44). Das ist eine
+  Infrastruktur-Störung, **kein Angriff** — und darf den Lauf nicht abbrechen. Der Aufbau des
+  Clients wird deshalb **im jeweiligen `_attempt` separat** gekapselt und ein `SsrfBlocked` von
+  dort zu `ArchiveError(service, "transport", transient=True)` übersetzt (retrybar). Nur das
+  `SsrfBlocked` aus `assert_url_allowed` — der von außen eingeschleusten `origin_url` — bleibt
+  der harte Stopp. Ohne diese Trennung killt ein DNS-Aussetzer auf `web.archive.org` den
+  kompletten Backfill statt einer einzelnen Quelle.
 - `_validate_snapshot_url` wirft künftig `ArchiveError(..., reason="invalid_snapshot_url")`
   statt `ValueError`.
 
@@ -505,7 +515,12 @@ Direkt nach `archive_all`: über `res.failures.items()` iterieren und je Eintrag
 - Zähler `consecutive_archive_failed`: bei `archive_failed` erhöhen, bei jedem anderen Status
   auf 0 setzen. Erreicht er `settings.consecutive_failure_limit`, Schleife verlassen, nach
   stderr eine Zeile schreiben, die das Limit und den häufigsten Grund nennt, die Summary
-  ausgeben und **3** zurückgeben.
+  ausgeben und **3** zurückgeben. Ein Limit **≤ 0 schaltet den Breaker ab** (kein Abbruch);
+  die Ermittlung des häufigsten Grundes muss den leeren Counter vertragen (`-` statt Absturz).
+- Die Laufzähler + die Gründe-Verteilung liegen in **einem** kleinen Datenbündel statt als
+  sieben Einzelparameter durch die Gegend gereicht zu werden (R-ARCH-04, `max-args=5`); die
+  Summary-Zeile wird von diesem Bündel gerendert. Die **Dry-Run-Zeile bleibt unverändert**
+  (kein `reasons=`-Feld — es wird nichts archiviert).
 - Die Summary-Zeile bekommt ein zusätzliches Feld
   `reasons=<label>=<n>,<label>=<n>` (nach Häufigkeit absteigend sortiert, bei Gleichstand
   alphabetisch); ist der Counter leer, `reasons=-`. Die bestehenden Felder und ihre

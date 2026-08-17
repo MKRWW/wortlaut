@@ -101,6 +101,17 @@ def wired() -> Iterator[SimpleNamespace]:
         patch("wortlaut.cli.DbSettings", return_value=MagicMock(dsn="f")),
         patch("wortlaut.cli.WormSettings", return_value=MagicMock()),
         patch("wortlaut.cli.DipSettings", return_value=MagicMock()),
+        patch(
+            "wortlaut.cli.ArchiveSettings",
+            return_value=SimpleNamespace(
+                wayback_min_interval_seconds=5.0,
+                archive_today_min_interval_seconds=15.0,
+                retry_attempts=3,
+                retry_base_delay_seconds=2.0,
+                optional_failure_limit=3,
+                consecutive_failure_limit=5,
+            ),
+        ),
         patch("wortlaut.cli.create_async_engine_from", return_value=engine),
         patch("wortlaut.cli.make_sessionmaker", return_value=FakeSessionmaker()),
         patch("wortlaut.cli.DipPlenarprotokollAdapter", return_value=adapter),
@@ -255,3 +266,112 @@ def test_module_entrypoint_no_subcommand() -> None:
         check=False,
     )
     assert result.returncode == 2
+
+
+# ── #73: Circuit-Breaker (AC7) + Gründe-Aggregation (AC8) ────────────────
+
+
+def _archive_failed_outcome(url: str) -> IngestOutcome:
+    """archive_failed mit Wayback-404 und archive.today-429 als Labels."""
+    return IngestOutcome(
+        "archive_failed",
+        None,
+        f"h-{url}",
+        span_count=0,
+        archive_failures=("wayback:http_status_404", "archive_today:http_status_429"),
+    )
+
+
+async def test_circuit_breaker_aborts_run(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC7: consecutive_failure_limit=5 erreicht -> Lauf bricht ab, Exit-Code 3,
+    nicht mehr als 5 Sources verarbeitet, Ausgabe nennt Abbruchgrund und
+    Gründe-Verteilung."""
+    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 8)]
+    wired.ingest.side_effect = [_archive_failed_outcome(f"http://a/p{i}.pdf") for i in range(1, 8)]
+    rc = await _run(_ns())
+    cap = capfd.readouterr()
+    assert rc == 3
+    assert wired.ingest.call_count == 5  # nicht mehr als `limit` Sources
+    assert "archive_failed=5" in cap.out
+    assert "Circuit-Breaker" in cap.err
+    assert "häufigster Grund" in cap.err
+    assert (
+        "archive_today:http_status_429=5" in cap.err
+    )  # häufigster Grund (Gleichstand → alphabetisch)
+    # Summary-Zeile mit Gründe-Verteilung (Häufigkeit absteigend, Gleichstand alphabetisch)
+    assert "reasons=archive_today:http_status_429=5,wayback:http_status_404=5" in cap.out
+    # Abbruch tritt ein, BEVOR die restlichen Refs verarbeitet werden
+    assert "p6" not in cap.err
+
+
+async def test_circuit_breaker_resets_on_success(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC7 (Zähler-Reset): ein Erfolg zwischen den Fehlern setzt die
+    aufeinanderfolgenden archive_failed zurück -> kein Abbruch, rc 0.
+
+    Pattern (12 Refs, je 3.): F F I — die kurzen Fails-Serien (max. 2) werden
+    durch die Inserts durchbrochen; der aufeinanderfolgende Zähler erreicht nie
+    das Limit 5, der Lauf bleibt am Leben.
+    """
+    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 13)]
+    outcomes: list[IngestOutcome] = []
+    for i in range(1, 13):
+        if i % 3 == 0:
+            outcomes.append(IngestOutcome("inserted", None, f"h{i}", span_count=0))
+        else:
+            outcomes.append(_archive_failed_outcome(f"http://a/p{i}.pdf"))
+    wired.ingest.side_effect = outcomes
+    rc = await _run(_ns())
+    cap = capfd.readouterr()
+    assert rc == 0
+    assert wired.ingest.call_count == 12
+    assert "inserted=4" in cap.out
+    assert "archive_failed=8" in cap.out
+
+
+async def test_circuit_breaker_without_reset_would_abort(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """Gegenprobe zum Reset-Test: WÄRE der Zähler nicht reset, würde die Serie
+    p1..p5 (5 consecutive) den Breaker auslösen. Ein Erfolg als p3 verhindert
+    das — das zeigt: der Reset ist das einzige, was den Lauf am Leben hält."""
+    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 8)]
+    outcomes: list[IngestOutcome] = []
+    for i in range(1, 8):
+        if i == 3:
+            outcomes.append(IngestOutcome("inserted", None, f"h{i}", span_count=0))
+        else:
+            outcomes.append(_archive_failed_outcome(f"http://a/p{i}.pdf"))
+    wired.ingest.side_effect = outcomes
+    rc = await _run(_ns())
+    # p1,p2 = 2 Fails, p3 = Insert (reset), p4..p7 = 4 Fails → unter Limit → rc 0
+    assert rc == 0
+    assert wired.ingest.call_count == 7
+    assert "archive_failed=6" in capfd.readouterr().out
+
+
+async def test_summary_reports_failure_reasons(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC8: Lauf mit ≥1 Archiv-Fehler -> Summary-Zeile enthält ein
+    `reasons=`-Feld mit jedem Grund (Dienst, Kürzel, Anzahl)."""
+    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 5)]
+    wired.ingest.side_effect = [_archive_failed_outcome(f"http://a/p{i}.pdf") for i in range(1, 5)]
+    rc = await _run(_ns())
+    out = capfd.readouterr().out
+    assert rc == 0
+    assert "reasons=archive_today:http_status_429=4,wayback:http_status_404=4" in out
+
+
+async def test_summary_reports_dash_when_no_failures(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC8 (leerer Counter): keine Archiv-Fehler -> `reasons=-`."""
+    wired.adapter.refs = [_ref("http://a/p1.pdf")]
+    rc = await _run(_ns())
+    out = capfd.readouterr().out
+    assert rc == 0
+    assert "reasons=-" in out

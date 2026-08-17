@@ -52,6 +52,7 @@ class IngestOutcome:
     source_id: UUID | None
     content_hash: str
     span_count: int = 0
+    archive_failures: tuple[str, ...] = ()  # ArchiveError.label() je Dienst
 
 
 async def ingest_source(
@@ -68,10 +69,19 @@ async def ingest_source(
     if await source_exists(session, h):
         return IngestOutcome("skipped_duplicate", None, h)
 
-    # 4./5. fremdarchivieren (≥1 Archiv reicht, sonst kein Insert)
+    # 4./5. fremdarchivieren — Wayback ist der Pflicht-Anker (Q2): ohne
+    #    wayback_url kein Insert, unabhängig von archive.today.
     res = await archive_all(raw.origin_url, wayback=deps.wayback, archive_today=deps.archive_today)
-    if res.wayback_url is None and res.archive_today_url is None:
-        return IngestOutcome("archive_failed", None, h)
+    # Observability: JEDE Failure wird geloggt — auch bei Erfolg (Soft-Failure).
+    for dienst, fehler in res.failures.items():
+        logger.warning("archive %s fehlgeschlagen (%s): %s", dienst, raw.origin_url, fehler)
+    if res.wayback_url is None:
+        return IngestOutcome(
+            "archive_failed",
+            None,
+            h,
+            archive_failures=tuple(f.label() for f in res.failures.values()),
+        )
 
     # 6. WORM-put (content-adressiert, Key = Hash)
     raw_bytes_ref = await deps.worm.put(h, raw.raw_bytes, content_type=raw.mime_type)
@@ -104,7 +114,8 @@ async def ingest_source(
             return IngestOutcome("skipped_duplicate", None, h)
         raise
 
-    # 9. Spans nur, wenn ein kanonischer Text existiert (sonst source-only, AC6)
+    # 9. Spans nur, wenn ein kanonischer Text existiert (sonst source-only, AC6).
+    #    Soft-Failures (z.B. archive.today) werden trotzdem nach oben gereicht.
     span_count = 0
     if normalized is not None:
         span_count = await _ingest_spans(
@@ -114,7 +125,13 @@ async def ingest_source(
             normalized=normalized,
             source_id=source_id,
         )
-    return IngestOutcome("inserted", source_id, h, span_count)
+    return IngestOutcome(
+        "inserted",
+        source_id,
+        h,
+        span_count,
+        tuple(f.label() for f in res.failures.values()),
+    )
 
 
 def _safe_normalize(adapter: IngestAdapter, raw: RawSource) -> str | None:
