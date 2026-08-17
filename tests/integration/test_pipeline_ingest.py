@@ -361,3 +361,51 @@ async def test_concurrent_ingest_unique_race(
     async with sessions() as session:
         count = await _count_for_hash(session, outcome_a.content_hash)
         assert count == 1
+
+
+# ── #73 AC6: Wayback ist Pflicht, archive.today rettet die Quelle NICHT ──
+
+
+async def test_wayback_hard_fail_blocks_insert(
+    pg_dsn: str,
+    db_engine: AsyncEngine,
+    sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+) -> None:
+    """#73/AC6: Wayback faellt aus, archive.today liefert -> archive_failed, KEINE Zeile.
+
+    Codifiziert die Stakeholder-Entscheidung Q2: der Wayback-Snapshot ist der Pflicht-Anker;
+    ein archive.today-Treffer allein reicht als Beweis-Anker NICHT (R-CORE-02).
+    """
+    await upgrade_head(pg_dsn)
+
+    raw_bytes = b"wortlaut-0073-ac6-hard-fail"
+    raw = RawSource(
+        origin_url="https://example.com/0073-ac6",
+        source_type="rede",
+        raw_bytes=raw_bytes,
+        mime_type="application/pdf",
+        retrieved_at=datetime.now(UTC),
+    )
+    adapter = FakeIngestAdapter(raw)
+    wayback = CountingArchiver(url=None, fail=True)
+    atoday = CountingArchiver(url="https://archive.ph/snap-0073-ac6")
+    worm = CountingWorm()
+    deps = PipelineDeps(adapter=adapter, wayback=wayback, archive_today=atoday, worm=worm)
+    ref = SourceRef(origin_url="https://example.com/0073-ac6", source_type="rede", hint={})
+
+    async with sessions() as session:
+        await _seed_adapter(session, adapter.name, adapter.version)
+        outcome = await ingest_source(
+            ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
+        )
+
+    assert outcome.status == "archive_failed"
+    assert outcome.source_id is None
+    # Nichts darf die Provenienz-Huerde passiert haben: kein WORM-Put, keine Zeile.
+    assert worm.put_calls == 0
+    async with sessions() as session:
+        assert await _count_for_hash(session, outcome.content_hash) == 0
+
+    # Der Grund ist strukturiert nach oben durchgereicht (Observability, #73).
+    assert any("wayback" in label for label in outcome.archive_failures)

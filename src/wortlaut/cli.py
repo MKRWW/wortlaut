@@ -9,12 +9,16 @@ import argparse
 import asyncio
 import contextlib
 import sys
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from wortlaut.archive.archiver import ArchiveTodayArchiver, WaybackArchiver
+from wortlaut.archive.settings import ArchiveSettings
+from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
 from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
-from wortlaut.pipeline.ingest import PipelineDeps, ingest_source
+from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
 from wortlaut.store.adapters import ensure_ingest_adapter
 from wortlaut.store.db import create_async_engine_from, make_sessionmaker
 from wortlaut.store.migrations import upgrade_head
@@ -50,6 +54,7 @@ async def _run(args: argparse.Namespace) -> int:
         db_settings = DbSettings()
         worm_settings = WormSettings()
         dip_settings = DipSettings()
+        archive_settings = ArchiveSettings()
     except Exception as e:
         print(f"Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
         return 2
@@ -58,8 +63,7 @@ async def _run(args: argparse.Namespace) -> int:
     sessions = make_sessionmaker(engine)
     adapter = DipPlenarprotokollAdapter(dip_settings)
     worm = MinioWormStore(worm_settings)
-    wayback = WaybackArchiver()
-    atoday = ArchiveTodayArchiver()
+    wayback, atoday_inner, atoday = _build_archivers(archive_settings)
     deps = PipelineDeps(adapter=adapter, wayback=wayback, archive_today=atoday, worm=worm)
 
     try:
@@ -90,13 +94,14 @@ async def _run(args: argparse.Namespace) -> int:
             )
             refs = refs[: args.limit]
 
-        inserted = skipped = archive_failed = fetch_error = spans_total = 0
+        stats = _RunStats()
+        breaker_limit = archive_settings.consecutive_failure_limit
 
         if args.dry_run:
             print(
-                f"discovered={len(refs)} inserted={inserted} "
-                f"skipped_duplicate={skipped} archive_failed={archive_failed} "
-                f"fetch_error={fetch_error} spans_total={spans_total} dry_run=True"
+                f"discovered={len(refs)} inserted=0 "
+                f"skipped_duplicate=0 archive_failed=0 "
+                f"fetch_error=0 spans_total=0 dry_run=True"
             )
             return 0
 
@@ -106,25 +111,104 @@ async def _run(args: argparse.Namespace) -> int:
                     outcome = await ingest_source(
                         ref, deps=deps, session=s, rights_basis=args.rights_basis
                     )
-                if outcome.status == "inserted":
-                    inserted += 1
-                elif outcome.status == "skipped_duplicate":
-                    skipped += 1
-                elif outcome.status == "archive_failed":
-                    archive_failed += 1
-                spans_total += outcome.span_count
+                stats.record(outcome)
+                if outcome.status == "archive_failed":
+                    labels = ",".join(outcome.archive_failures)
+                    print(f"archive_failed: {ref.origin_url}: {labels}", file=sys.stderr)
             except (DipFetchError, ValueError) as e:
-                fetch_error += 1
+                stats.fetch_error += 1
                 print(f"fetch_error: {ref.origin_url}: {e}", file=sys.stderr)
 
-        print(
-            f"discovered={len(refs)} inserted={inserted} "
-            f"skipped_duplicate={skipped} archive_failed={archive_failed} "
-            f"fetch_error={fetch_error} spans_total={spans_total}"
-        )
+            # Circuit-Breaker (Q1): anhaltender Archiv-Ausfall bricht früh und
+            # diagnostizierbar ab — Exit 3 (abgegrenzt von 2 = Konfiguration).
+            # Limit <= 0 schaltet den Breaker ab.
+            if 0 < breaker_limit <= stats.consecutive_archive_failed:
+                print(
+                    f"Circuit-Breaker: {breaker_limit} aufeinanderfolgende archive_failed "
+                    f"— Abbruch, häufigster Grund: {stats.top_reason()}",
+                    file=sys.stderr,
+                )
+                print(stats.summary_line(len(refs)))
+                return 3
+
+        print(stats.summary_line(len(refs)))
         return 0
     finally:
         # Jede Cleanup-Aktion einzeln; ein Fehler darf die anderen nicht verschlucken.
-        for closer in (adapter.aclose, wayback.aclose, atoday.aclose, engine.dispose):
+        for closer in (adapter.aclose, wayback.aclose, atoday_inner.aclose, engine.dispose):
             with contextlib.suppress(Exception):
                 await closer()
+
+
+def _build_archivers(
+    settings: ArchiveSettings,
+) -> tuple[WaybackArchiver, ArchiveTodayArchiver, DisableAfterFailures]:
+    """Baut den Archiv-Stack: gedrosselt, retry-fähig, optionaler Dienst abschaltbar.
+
+    Liefert auch den INNEREN archive.today-Archiver zurück — nur der hält den
+    httpx-Client und muss im Cleanup geschlossen werden.
+    """
+    wayback = WaybackArchiver(
+        limiter=RateLimiter(settings.wayback_min_interval_seconds),
+        attempts=settings.retry_attempts,
+        base_delay_seconds=settings.retry_base_delay_seconds,
+    )
+    atoday_inner = ArchiveTodayArchiver(
+        limiter=RateLimiter(settings.archive_today_min_interval_seconds),
+        attempts=settings.retry_attempts,
+        base_delay_seconds=settings.retry_base_delay_seconds,
+    )
+    atoday = DisableAfterFailures(
+        atoday_inner, service="archive_today", limit=settings.optional_failure_limit
+    )
+    return wayback, atoday_inner, atoday
+
+
+@dataclass
+class _RunStats:
+    """Laufzähler + Gründe-Verteilung als EIN Bündel (R-ARCH-04: max. 5 Parameter)."""
+
+    inserted: int = 0
+    skipped: int = 0
+    archive_failed: int = 0
+    fetch_error: int = 0
+    spans_total: int = 0
+    consecutive_archive_failed: int = 0
+    reasons: Counter[str] = field(default_factory=Counter)
+
+    def record(self, outcome: IngestOutcome) -> None:
+        """Bucht ein Ingest-Ergebnis ein; Erfolg/Dedup bricht die Fehlerserie."""
+        self.reasons.update(outcome.archive_failures)
+        if outcome.status == "inserted":
+            self.inserted += 1
+            self.consecutive_archive_failed = 0
+        elif outcome.status == "skipped_duplicate":
+            self.skipped += 1
+            self.consecutive_archive_failed = 0
+        elif outcome.status == "archive_failed":
+            self.archive_failed += 1
+            self.consecutive_archive_failed += 1
+        self.spans_total += outcome.span_count
+
+    def _ordered_reasons(self) -> list[tuple[str, int]]:
+        """Häufigkeit absteigend, bei Gleichstand alphabetisch."""
+        return sorted(self.reasons.items(), key=lambda item: (-item[1], item[0]))
+
+    def top_reason(self) -> str:
+        """Häufigster Grund als ``<label>=<n>``; ``-`` wenn keiner erfasst ist."""
+        ordered = self._ordered_reasons()
+        if not ordered:
+            return "-"
+        label, count = ordered[0]
+        return f"{label}={count}"
+
+    def summary_line(self, discovered: int) -> str:
+        """Summary; bestehende Felder/Reihenfolge unverändert, reasons= angehängt."""
+        ordered = self._ordered_reasons()
+        reasons_field = ",".join(f"{label}={count}" for label, count in ordered) or "-"
+        return (
+            f"discovered={discovered} inserted={self.inserted} "
+            f"skipped_duplicate={self.skipped} archive_failed={self.archive_failed} "
+            f"fetch_error={self.fetch_error} spans_total={self.spans_total} "
+            f"reasons={reasons_field}"
+        )
