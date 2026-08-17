@@ -10,10 +10,13 @@ import asyncio
 import contextlib
 import sys
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
 from wortlaut.archive.archiver import ArchiveTodayArchiver, WaybackArchiver
+from wortlaut.archive.errors import ArchiveError
+from wortlaut.archive.preflight import probe_archive
 from wortlaut.archive.settings import ArchiveSettings
 from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
 from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
@@ -42,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ingest.add_argument("--limit", type=int, default=None)
     p_ingest.add_argument("--no-migrate", action="store_true")
     p_ingest.add_argument("--dry-run", action="store_true")
+    p_ingest.add_argument("--no-preflight", action="store_true")
 
     p_timestamp = subparsers.add_parser("timestamp")
     p_timestamp.add_argument("--limit", type=int, default=None)
@@ -93,7 +97,13 @@ async def _run(args: argparse.Namespace) -> int:
             )
             await s.commit()
 
-        # 3) Discover + Loop
+        # 3) Pre-Flight-Archiv-Health-Check (Spec 0077), NACH dem Bootstrap und
+        #    VOR discover — bei totem Fremdarchiv wird damit kein DIP-Call und
+        #    kein Ziel-PDF geladen.
+        if not await _preflight_ok(args, archive_settings, wayback):
+            return 3
+
+        # 4) Discover + Loop
         try:
             refs = list(await adapter.discover(args.since))
         except (DipFetchError, ValueError) as e:
@@ -147,10 +157,7 @@ async def _run(args: argparse.Namespace) -> int:
         print(stats.summary_line(len(refs)))
         return 0
     finally:
-        # Jede Cleanup-Aktion einzeln; ein Fehler darf die anderen nicht verschlucken.
-        for closer in (adapter.aclose, wayback.aclose, atoday_inner.aclose, engine.dispose):
-            with contextlib.suppress(Exception):
-                await closer()
+        await _aclose_all(adapter.aclose, wayback.aclose, atoday_inner.aclose, engine.dispose)
 
 
 async def _run_timestamp(args: argparse.Namespace) -> int:
@@ -223,10 +230,38 @@ async def _run_timestamp(args: argparse.Namespace) -> int:
         # hash_mismatch ist ein Alarm (nicht Statistik): Exit 4, abgegrenzt von 0/2/3.
         return 4 if stats.hash_mismatch > 0 else 0
     finally:
-        # Jede Cleanup-Aktion einzeln; ein Fehler darf die anderen nicht verschlucken.
-        for closer in (stamper.aclose, engine.dispose):
-            with contextlib.suppress(Exception):
-                await closer()
+        await _aclose_all(stamper.aclose, engine.dispose)
+
+
+async def _aclose_all(*closers: Callable[[], Awaitable[object]]) -> None:
+    """Schliesst jede Ressource einzeln; ein Fehler darf die anderen nicht verschlucken."""
+    for closer in closers:
+        with contextlib.suppress(Exception):
+            await closer()
+
+
+async def _preflight_ok(
+    args: argparse.Namespace, settings: ArchiveSettings, wayback: WaybackArchiver
+) -> bool:
+    """Pre-Flight-Probe (Spec 0077). ``False`` ⇒ der Lauf bricht mit Exit 3 ab.
+
+    Übersprungen bei ``--no-preflight``, ``--dry-run`` oder
+    ``preflight_enabled=false`` (§4.5/§4.6) — dann wird **kein** Call abgesetzt.
+    Nur ``ArchiveError`` wird gefangen; ein ``SsrfBlocked`` ist ein
+    Security-Stopp und fliegt unverändert durch (Festlegung aus #73).
+    """
+    if args.no_preflight or args.dry_run or not settings.preflight_enabled:
+        return True
+    try:
+        await probe_archive(wayback, probe_url=settings.preflight_url)
+    except ArchiveError as e:
+        print(
+            f"Pre-Flight: Fremdarchiv nicht funktionsfaehig ({e}) "
+            f"— Abbruch vor dem ersten Ziel-Fetch",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _build_archivers(
