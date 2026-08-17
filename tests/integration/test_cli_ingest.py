@@ -216,7 +216,7 @@ async def test_archive_failed_retried_on_rerun(
     async def _run_once() -> int:
         with (
             patch("wortlaut.cli.DipPlenarprotokollAdapter", _FakeCliAdapter),
-            patch("wortlaut.cli.WaybackArchiver", lambda **_kw: _ControllableWayback(state)),
+            patch("wortlaut.cli.WaybackArchiver", return_value=_ControllableWayback(state)),
             patch("wortlaut.cli.ArchiveTodayArchiver", _FakeArchiver),
         ):
             return await _run(_ingest_args())
