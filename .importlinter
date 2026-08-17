@@ -33,6 +33,21 @@ source_modules =
 forbidden_modules =
     wortlaut.pipeline
 
+# Spec 0081 §4.5: Der ASGI-Composition-Root (wortlaut.serving.asgi) und das CLI-Subcommand
+# `serve` (wortlaut.cli) verdrahten die Read-API aus der Umgebung. Die Abhaengigkeit zeigt
+# vom Entrypoint ZUR API — nie zurueck: der Serving-Layer darf den CLI-Entrypoint nicht
+# importieren (sonst haengt die API am Batch-Entrypoint und der Zyklus waere offen).
+# Bewusst NICHT ergaenzt: "serving importiert nicht timestamp/archive" — das waere rot,
+# weil serving.app -> pipeline.verify -> timestamp.verify seit #76 gewollt ist und
+# forbidden-Contracts auch indirekte Ketten greifen.
+[importlinter:contract:serving-importiert-nicht-den-cli-entrypoint]
+name = Serving-Layer importiert den CLI-Entrypoint nicht
+type = forbidden
+source_modules =
+    wortlaut.serving
+forbidden_modules =
+    wortlaut.cli
+
 # Spec 0004 §3: wortlaut.archive ist ein eigener Infrastruktur-Layer und importiert
 # keinen anderen wortlaut-Layer (wird nur von wortlaut.pipeline konsumiert, #7).
 [importlinter:contract:archive-ist-unabhaengig]

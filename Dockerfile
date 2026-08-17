@@ -20,4 +20,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 USER appuser
+# Dokumentiert den Default-Port des Serving-Entrypoints (#81, WORTLAUT_API_PORT).
+# Kein Port wird dadurch geoeffnet — das macht das Deployment (-p / compose).
+EXPOSE 8000
 CMD ["python", "-m", "wortlaut"]

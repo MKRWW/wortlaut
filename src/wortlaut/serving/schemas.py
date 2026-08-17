@@ -7,6 +7,7 @@ raw_bytes_ref/WORM-Pfade/Pipeline-Interna/machine-Spans (datamodel §9).
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -117,3 +118,14 @@ class SourceEvidence(BaseModel):
     byte_size: int
     mime_type: str
     retrieved_at: datetime
+
+
+class HealthStatus(BaseModel):
+    """Liveness/Readiness-Status der Health-Endpunkte (Spec 0081 §4.3).
+
+    Bewusst KEINE Interna (R-SEC-01): genau zwei mögliche Werte, kein
+    Exception-Text, keine DSN/Host — auch bei 503 preisgt der Body nur
+    ``not_ready``.
+    """
+
+    status: Literal["ok", "ready"]

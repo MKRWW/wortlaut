@@ -14,6 +14,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
+import uvicorn
+from pydantic import ValidationError
+
 from wortlaut.archive.archiver import ArchiveTodayArchiver, WaybackArchiver
 from wortlaut.archive.errors import ArchiveError
 from wortlaut.archive.preflight import probe_archive
@@ -23,6 +26,7 @@ from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
 from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
 from wortlaut.pipeline.timestamp import TimestampOutcome, timestamp_source
+from wortlaut.serving.settings import ApiSettings
 from wortlaut.store.adapters import ensure_ingest_adapter
 from wortlaut.store.db import create_async_engine_from, make_sessionmaker
 from wortlaut.store.migrations import upgrade_head
@@ -52,16 +56,21 @@ def main(argv: list[str] | None = None) -> int:
     p_timestamp.add_argument("--no-migrate", action="store_true")
     p_timestamp.add_argument("--dry-run", action="store_true")
 
+    subparsers.add_parser("serve")
+
     args = parser.parse_args(argv)
 
     subcommand = getattr(args, "subcommand", None)
-    if subcommand != "ingest" and subcommand != "timestamp":
-        print("Fehler: Subcommand 'ingest' oder 'timestamp' erforderlich", file=sys.stderr)
+    if subcommand not in ("ingest", "timestamp", "serve"):
+        print("Fehler: Subcommand 'ingest', 'timestamp' oder 'serve' erforderlich", file=sys.stderr)
         return 2
 
     if subcommand == "ingest":
         return asyncio.run(_run(args))
-    return asyncio.run(_run_timestamp(args))
+    if subcommand == "timestamp":
+        return asyncio.run(_run_timestamp(args))
+    # uvicorn bringt seinen eigenen Event-Loop mit — kein asyncio.run drumherum.
+    return _run_serve()
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -73,7 +82,7 @@ async def _run(args: argparse.Namespace) -> int:
         dip_settings = DipSettings()
         archive_settings = ArchiveSettings()
     except Exception as e:
-        print(f"Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
         return 2
 
     engine = create_async_engine_from(db_settings)
@@ -181,7 +190,7 @@ async def _run_timestamp(args: argparse.Namespace) -> int:
             ]
         )
     except Exception as e:
-        print(f"Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
         return 2
 
     engine = create_async_engine_from(db_settings)
@@ -231,6 +240,50 @@ async def _run_timestamp(args: argparse.Namespace) -> int:
         return 4 if stats.hash_mismatch > 0 else 0
     finally:
         await _aclose_all(stamper.aclose, engine.dispose)
+
+
+def _run_serve() -> int:
+    """Composition-Root fuer ``serve``: ENV pruefen, dann uebernimmt uvicorn.
+
+    Die Settings werden hier NUR validiert (fail-fast, Exit 2 wie ``ingest``); gebaut
+    wird je Worker-Prozess in ``wortlaut.serving.asgi.create_asgi_app`` — deshalb der
+    Import-String statt einer App-Instanz (sonst ignoriert uvicorn ``workers``).
+    """
+    try:
+        DbSettings()  # Validierung, kein toter Code: fehlende ENV -> Exit 2
+        WormSettings()  # dito
+        api = ApiSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return 2
+
+    uvicorn.run(
+        "wortlaut.serving.asgi:create_asgi_app",
+        factory=True,
+        host=api.host,
+        port=api.port,
+        workers=api.workers,
+    )
+    return 0
+
+
+def _config_error(e: Exception) -> str:
+    """Konfigurationsfehler OHNE ENV-Werte (R-SEC-01, Spec 0081 AC4).
+
+    pydantic haengt an eine ``ValidationError`` das komplette Eingabe-Dict an —
+    bei ``WormSettings`` also den Wert von ``WORTLAUT_WORM_SECRET_KEY``:
+    ``input_value={'endpoint': ..., 'secret_key': 'TOPSECRET123'}``. Das landete
+    damit woertlich auf stderr und in jedem Container-Log. Genannt werden
+    deshalb ausschliesslich die betroffenen Feldnamen — das ist fuer den
+    Betreiber ohnehin die nuetzlichere Information.
+
+    Andere Fehler (z.B. unbekanntes TSA-Profil) tragen unseren eigenen Text ohne
+    ENV-Werte und bleiben unveraendert diagnostizierbar.
+    """
+    if isinstance(e, ValidationError):
+        fields = ", ".join(str(err["loc"][0]) for err in e.errors() if err["loc"])
+        return f"fehlende oder ungueltige ENV-Felder: {fields or '-'}"
+    return str(e)
 
 
 async def _aclose_all(*closers: Callable[[], Awaitable[object]]) -> None:
