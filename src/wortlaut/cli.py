@@ -19,11 +19,16 @@ from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
 from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
 from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
+from wortlaut.pipeline.timestamp import TimestampOutcome, timestamp_source
 from wortlaut.store.adapters import ensure_ingest_adapter
 from wortlaut.store.db import create_async_engine_from, make_sessionmaker
 from wortlaut.store.migrations import upgrade_head
 from wortlaut.store.settings import DbSettings, WormSettings
+from wortlaut.store.timestamps import list_sources_without_timestamp
 from wortlaut.store.worm import MinioWormStore
+from wortlaut.timestamp.profiles import load_profile
+from wortlaut.timestamp.settings import TimestampSettings
+from wortlaut.timestamp.tsa import FallbackTimeStamper, Rfc3161Tsa
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,13 +43,21 @@ def main(argv: list[str] | None = None) -> int:
     p_ingest.add_argument("--no-migrate", action="store_true")
     p_ingest.add_argument("--dry-run", action="store_true")
 
+    p_timestamp = subparsers.add_parser("timestamp")
+    p_timestamp.add_argument("--limit", type=int, default=None)
+    p_timestamp.add_argument("--no-migrate", action="store_true")
+    p_timestamp.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args(argv)
 
-    if getattr(args, "subcommand", None) != "ingest":
-        print("Fehler: Subcommand 'ingest' erforderlich", file=sys.stderr)
+    subcommand = getattr(args, "subcommand", None)
+    if subcommand != "ingest" and subcommand != "timestamp":
+        print("Fehler: Subcommand 'ingest' oder 'timestamp' erforderlich", file=sys.stderr)
         return 2
 
-    return asyncio.run(_run(args))
+    if subcommand == "ingest":
+        return asyncio.run(_run(args))
+    return asyncio.run(_run_timestamp(args))
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -140,6 +153,82 @@ async def _run(args: argparse.Namespace) -> int:
                 await closer()
 
 
+async def _run_timestamp(args: argparse.Namespace) -> int:
+    """Composition-Root für den Stempel-Pass (Spec 0076 §11).
+
+    Settings → Engine → Stempeler → Pass. Exit: 0 = ok, 2 = Konfiguration,
+    3 = Circuit-Breaker, 4 = hash_mismatch.
+    """
+    # 1) Settings aus ENV UND Stempeler bauen — beides ist Konfiguration und endet
+    #    im selben Exit 2. Ein gemeinsamer Block, damit es dafür genau EINEN
+    #    Rückgabepunkt gibt (unbekanntes Profil und leere Profilliste werfen
+    #    ValueError, fehlende ENV wirft ValidationError).
+    try:
+        db_settings = DbSettings()
+        worm_settings = WormSettings()
+        tsa_settings = TimestampSettings()
+        stamper = FallbackTimeStamper(
+            [
+                Rfc3161Tsa(load_profile(name), timeout_seconds=tsa_settings.timeout_seconds)
+                for name in tsa_settings.profile_names()
+            ]
+        )
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
+        return 2
+
+    engine = create_async_engine_from(db_settings)
+    sessions = make_sessionmaker(engine)
+    worm = MinioWormStore(worm_settings)
+
+    try:
+        # 3) Bootstrap
+        if not args.no_migrate:
+            await upgrade_head(db_settings.dsn)
+        await worm.ensure_bucket()
+
+        # 4) Pending-Quellen laden (abgeleitet: keine source_timestamp-Zeile).
+        async with sessions() as s:
+            pending = await list_sources_without_timestamp(s, limit=args.limit)
+
+        if args.dry_run:
+            print(f"pending={len(pending)} dry_run=True")
+            return 0
+
+        # 5) Pass: je Quelle timestamp_source in einer eigenen Session.
+        stats = _TimestampStats()
+        breaker_limit = tsa_settings.consecutive_failure_limit
+
+        for source in pending:
+            async with sessions() as s:
+                outcome = await timestamp_source(source, session=s, worm=worm, stamper=stamper)
+            stats.record(outcome)
+            if outcome.status == "hash_mismatch":
+                print(
+                    f"hash_mismatch: {outcome.source_id} (WORM-Bytes passen nicht zum Ledger-Hash)",
+                    file=sys.stderr,
+                )
+
+            # Circuit-Breaker: aufeinanderfolgende tsa_failed (Muster #73).
+            if 0 < breaker_limit <= stats.consecutive_tsa_failed:
+                print(
+                    f"Circuit-Breaker: {breaker_limit} aufeinanderfolgende tsa_failed "
+                    f"— Abbruch, häufigster Grund: {stats.top_reason()}",
+                    file=sys.stderr,
+                )
+                print(stats.summary_line(len(pending)))
+                return 3
+
+        print(stats.summary_line(len(pending)))
+        # hash_mismatch ist ein Alarm (nicht Statistik): Exit 4, abgegrenzt von 0/2/3.
+        return 4 if stats.hash_mismatch > 0 else 0
+    finally:
+        # Jede Cleanup-Aktion einzeln; ein Fehler darf die anderen nicht verschlucken.
+        for closer in (stamper.aclose, engine.dispose):
+            with contextlib.suppress(Exception):
+                await closer()
+
+
 def _build_archivers(
     settings: ArchiveSettings,
 ) -> tuple[WaybackArchiver, ArchiveTodayArchiver, DisableAfterFailures]:
@@ -162,6 +251,57 @@ def _build_archivers(
         atoday_inner, service="archive_today", limit=settings.optional_failure_limit
     )
     return wayback, atoday_inner, atoday
+
+
+@dataclass
+class _TimestampStats:
+    """Stempel-Pass-Laufzähler + Gründe-Verteilung als EIN Bündel (R-ARCH-04)."""
+
+    stamped: int = 0
+    hash_mismatch: int = 0
+    worm_missing: int = 0
+    tsa_failed: int = 0
+    consecutive_tsa_failed: int = 0
+    reasons: Counter[str] = field(default_factory=Counter)
+
+    def record(self, outcome: TimestampOutcome) -> None:
+        """Bucht ein TimestampOutcome ein; ein Erfolg bricht die Fehlerserie."""
+        status = outcome.status
+        self.reasons.update(outcome.failures)
+        if status == "stamped":
+            self.stamped += 1
+            self.consecutive_tsa_failed = 0
+        elif status == "hash_mismatch":
+            self.hash_mismatch += 1
+            self.consecutive_tsa_failed = 0
+        elif status == "worm_missing":
+            self.worm_missing += 1
+            self.consecutive_tsa_failed = 0
+        elif status == "tsa_failed":
+            self.tsa_failed += 1
+            self.consecutive_tsa_failed += 1
+
+    def _ordered_reasons(self) -> list[tuple[str, int]]:
+        """Häufigkeit absteigend, bei Gleichstand alphabetisch."""
+        return sorted(self.reasons.items(), key=lambda item: (-item[1], item[0]))
+
+    def top_reason(self) -> str:
+        """Häufigster Grund als ``<label>=<n>``; ``-`` wenn keiner erfasst ist."""
+        ordered = self._ordered_reasons()
+        if not ordered:
+            return "-"
+        label, count = ordered[0]
+        return f"{label}={count}"
+
+    def summary_line(self, pending: int) -> str:
+        """Summary-Zeile; Felder in fester Reihenfolge, reasons= angehängt (Muster _RunStats)."""
+        ordered = self._ordered_reasons()
+        reasons_field = ",".join(f"{label}={count}" for label, count in ordered) or "-"
+        return (
+            f"pending={pending} stamped={self.stamped} "
+            f"hash_mismatch={self.hash_mismatch} worm_missing={self.worm_missing} "
+            f"tsa_failed={self.tsa_failed} reasons={reasons_field}"
+        )
 
 
 @dataclass

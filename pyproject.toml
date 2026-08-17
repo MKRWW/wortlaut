@@ -23,6 +23,10 @@ dependencies = [
   "httpx>=0.27",
   "pymupdf>=1.28.0",
   "fastapi>=0.115",
+  # RFC-3161-Zeitstempel (#76, ADR-0008). Untergrenze ist NICHT kosmetisch:
+  # CVE-2026-33753 (<= 1.0.5) hebelte die TSA-Identitaetspruefung per untergeschobenem
+  # Zertifikat im PKCS#7-Bag aus — genau die Angriffsklasse, gegen die wir pinnen.
+  "rfc3161-client>=1.0.8",
 ]
 
 [project.optional-dependencies]

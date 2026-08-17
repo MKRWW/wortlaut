@@ -176,6 +176,9 @@ def create_app(sessionmaker: async_sessionmaker[AsyncSession], worm: WormStore) 
             span_in_source=True,
             archive_wayback=report.archive_wayback,
             archive_today=report.archive_today,
+            timestamp_status=report.timestamp_status,
+            timestamp_tsa=report.timestamp_tsa,
+            timestamp_gen_time=report.timestamp_gen_time,
         )
 
     @app.get("/v1/sources/{source_id}", responses={404: {"description": "Quelle nicht gefunden"}})
