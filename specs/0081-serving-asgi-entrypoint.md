@@ -166,9 +166,20 @@ eine Zeile nach stderr + **Exit 2** (wie `ingest`). Der echte Bau passiert je Pr
       `"wortlaut.serving.asgi:create_asgi_app"`, `factory=True`, `host="1.2.3.4"`, `port=9999`,
       `workers=3`, und der Rückgabewert von `main` ist **0**. `[unit]`
 - [ ] **AC4** *(Fehlkonfiguration ⇒ Exit 2, kein Leak)* — *Given* `WORTLAUT_WORM_ACCESS_KEY` fehlt,
-      während `WORTLAUT_DB_DSN` ein Passwort enthält, *When* `main(["serve"])`, *Then* ist der
-      Rückgabewert **2**, `uvicorn.run` wurde **0×** aufgerufen, und die Ausgabe (stdout+stderr)
-      enthält **weder** das DSN-Passwort **noch** einen WORM-Secret-Wert. `[unit]`
+      während `WORTLAUT_DB_DSN` ein Passwort und `WORTLAUT_WORM_SECRET_KEY` einen erkennbaren Wert
+      enthält, *When* `main(["serve"])`, *Then* ist der Rückgabewert **2**, `uvicorn.run` wurde
+      **0×** aufgerufen, die Ausgabe (stdout+stderr) enthält **weder** das DSN-Passwort **noch** den
+      WORM-Secret-Wert, **und** sie nennt den fehlenden Feldnamen (`access_key`), damit der Betreiber
+      weiß, was fehlt. `[unit]`
+      > **Review-Nachtrag (Architekt, R-PROC-01):** Der erste Entwurf dieser Spec hat den Leak
+      > selbst verursacht und AC4 zu schwach geschnitten. **Gemessen** an pydantic 2.13:
+      > `print(f"Konfiguration fehlgeschlagen: {e}")` gibt bei einer `ValidationError` das
+      > **komplette Eingabe-Dict** aus — `input_value={'endpoint': …, 'secret_key': 'TOPSECRET123'}`.
+      > Der WORM-Secret-Wert landet damit **wörtlich auf stderr** und in jedem Container-Log
+      > (**R-SEC-01**). Die Fehlermeldung darf deshalb nur **Feldnamen** nennen, nie `str(e)` einer
+      > `ValidationError`. Da `_run` (ingest) und `_run_timestamp` **dieselbe Zeile** haben, wird der
+      > Fix an **einer** gemeinsamen Stelle gemacht und gilt für alle drei Subcommands — zwei
+      > bekannte Leaks stehen zu lassen wäre wissentliches Ausliefern eines Secret-Lecks.
 - [ ] **AC5** *(Liveness ohne DB)* — *Given* eine App, deren Session bei jeder Query wirft, *When*
       `GET /healthz`, *Then* **200** mit `{"status":"ok"}` und die Session-Dependency wurde **0×**
       benutzt. `[unit]`
@@ -199,7 +210,7 @@ eine Zeile nach stderr + **Exit 2** (wie `ingest`). Der echte Bau passiert je Pr
 ## 6. Testplan (Test-zu-AC-Mapping)
 
 **Unit (rein, keine Netz-/DB-Calls — R-TEST-03):**
-- `tests/unit/test_serving_asgi.py` — `test_factory_wires_from_env` → **AC1** ·
+- `tests/unit/test_serving_asgi_factory.py` — `test_factory_wires_from_env` → **AC1** ·
   `test_factory_uses_dsn_from_env` → AC1 · `test_factory_no_connection_on_build` → AC1
 - `tests/unit/test_cli_serve.py` — `test_serve_passes_import_string_and_factory` → **AC3** ·
   `test_serve_reads_host_port_workers_from_env` → AC3 · `test_serve_skips_bootstrap` → **AC2** ·
@@ -220,9 +231,10 @@ UPDATE/DELETE, kein neuer WORM-Zugriff.
 ## 7. Recht / Security
 
 - **R-SEC-01 (keine Secrets):** Alle Zugangsdaten kommen aus ENV; im Code/Image steht kein Wert.
-  Die Fehlermeldung bei Fehlkonfiguration gibt **keine ENV-Werte** aus (AC4 prüft das gegen ein
-  Passwort im DSN). Health-Bodies enthalten keine Interna (AC6). Der Dummy-ENV-Block im
-  CI-Smoke enthält bewusst triviale Nicht-Secrets (`dummy`).
+  Die Fehlermeldung bei Fehlkonfiguration nennt **nur Feldnamen, nie Werte** — siehe den
+  Review-Nachtrag an AC4: `str(ValidationError)` enthält das komplette ENV-Eingabe-Dict samt
+  `secret_key`. Health-Bodies enthalten keine Interna (AC6). Der Dummy-ENV-Block im CI-Smoke
+  enthält bewusst triviale Nicht-Secrets (`dummy`).
 - **R-SEC-04 (KI-frei):** Der neue Code liegt unter `src/wortlaut/serving/**` und fällt damit
   **zusätzlich** unter `check_no_llm_output` — der Composition-Root steht bewusst dort, wo das Gate
   hinschaut, statt daneben.
@@ -267,7 +279,11 @@ Invarianten gewahrt, kein Secret, keine Live-Calls im CI-Gate. PR referenziert *
 **Neu anlegen:**
 - `src/wortlaut/serving/settings.py`        — `ApiSettings`
 - `src/wortlaut/serving/asgi.py`            — `create_asgi_app()` (Composition-Root)
-- `tests/unit/test_serving_asgi.py`         — AC1
+- `tests/unit/test_serving_asgi_factory.py` — AC1
+  > **Review-Nachtrag (Architekt):** hieß im ersten Entwurf `test_serving_asgi.py` — gleicher
+  > Basename wie der Integrationstest, und pytest bricht im Default-Import-Mode (`prepend`, ohne
+  > `__init__.py` in den Test-Verzeichnissen) mit `import file mismatch` ab. Gemessen und
+  > umbenannt; **kein** globaler Eingriff in `addopts`/`--import-mode` dafür.
 - `tests/unit/test_cli_serve.py`            — AC2, AC3, AC4
 - `tests/unit/test_serving_health.py`       — AC5, AC6
 - `tests/integration/test_serving_asgi.py`  — AC7
@@ -377,7 +393,7 @@ def _run_serve() -> int:
         WormSettings()    # dito
         api = ApiSettings()
     except Exception as e:
-        print(f"Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
         return 2
 
     uvicorn.run(
@@ -389,7 +405,25 @@ def _run_serve() -> int:
     )
     return 0
 ```
-5. `_run`/`_run_timestamp`, die Summary-Zeilen, Exit-Codes und der Preflight bleiben **unangetastet**.
+5. **Review-Nachtrag (Architekt, R-SEC-01):** gemeinsamer Helfer, den **alle drei** Subcommands
+   benutzen — `str(ValidationError)` enthält das ENV-Eingabe-Dict inkl. `secret_key` (AC4):
+```python
+def _config_error(e: Exception) -> str:
+    """Konfigurationsfehler OHNE ENV-Werte (R-SEC-01).
+
+    pydantic haengt an eine ValidationError das komplette Eingabe-Dict an —
+    bei WormSettings also den Wert von WORTLAUT_WORM_SECRET_KEY. Das darf nie
+    in ein Log. Genannt werden ausschliesslich die betroffenen Feldnamen.
+    Andere Fehler (z.B. unbekanntes TSA-Profil) tragen unseren eigenen Text
+    ohne ENV-Werte und bleiben unveraendert diagnostizierbar.
+    """
+    if isinstance(e, ValidationError):
+        fields = ", ".join(str(err["loc"][0]) for err in e.errors() if err["loc"])
+        return f"fehlende oder ungueltige ENV-Felder: {fields or '-'}"
+    return str(e)
+```
+6. Sonst bleiben `_run`/`_run_timestamp`, die Summary-Zeilen, Exit-Codes und der Preflight
+   **unangetastet**.
 
 ### Tests
 

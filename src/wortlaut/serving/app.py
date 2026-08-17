@@ -10,6 +10,7 @@ aus den echten Annotationsobjekten lesen (die die lokalen get_session/SessionDep
 Definitionszeit einfangen); als Strings wären lokale Namen nicht auflösbar → 422.
 """
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
 from typing import Annotated
@@ -17,11 +18,14 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from wortlaut.pipeline.verify import verify_source
 from wortlaut.serving.schemas import (
     ContextItem,
+    HealthStatus,
     LocatorInfo,
     MatchInfo,
     SearchParams,
@@ -46,6 +50,7 @@ from wortlaut.store.read import (
 from wortlaut.store.worm import WormStore
 
 _WORD = re.compile(r"\w+", re.UNICODE)
+_READY_TIMEOUT_SECONDS = 2.0
 
 
 def _find_match(verbatim_text: str, q: str) -> MatchInfo | None:
@@ -133,6 +138,21 @@ def create_app(sessionmaker: async_sessionmaker[AsyncSession], worm: WormStore) 
             yield session
 
     SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+    @app.get("/healthz")
+    async def healthz() -> HealthStatus:
+        """Liveness: nur 'der Prozess lebt' — bewusst OHNE DB-Zugriff (§4.3)."""
+        return HealthStatus(status="ok")
+
+    @app.get("/readyz", responses={503: {"description": "Abhaengigkeit nicht bereit"}})
+    async def readyz(session: SessionDep) -> HealthStatus:
+        """Readiness: eine echte, billige DB-Abfrage. 503 ohne Interna (R-SEC-01)."""
+        try:
+            async with asyncio.timeout(_READY_TIMEOUT_SECONDS):
+                await session.execute(text("SELECT 1"))
+        except (SQLAlchemyError, OSError, TimeoutError) as e:
+            raise HTTPException(status_code=503, detail="not_ready") from e
+        return HealthStatus(status="ready")
 
     @app.get("/v1/search")
     async def search(
