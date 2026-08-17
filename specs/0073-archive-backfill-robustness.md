@@ -1,5 +1,18 @@
 # Increment-Spec: Fremdarchivierung backfill-robust + diagnostizierbar (#73)
 
+> ## AUFTRAG AN DEN CODER — ZUERST LESEN
+> Du bist der **Coder**, nicht der Reviewer. **Implementiere diese Spec.**
+> - Lege die Dateien aus **§10** wirklich auf der Platte an und ändere die dort genannten
+>   bestehenden Dateien. Am Ende müssen die neuen Dateien existieren.
+> - **Keine Rückfragen.** Wenn etwas unklar ist, halte dich wörtlich an §11.
+> - **Schreibe keine Review-Analyse** und **ändere diese Spec nicht.**
+> - Halte die Do-NOT-Liste in **§12** ein.
+> - Führe **keine** git-, docker-, npm- oder uv-Befehle aus außer dem in **§13**.
+>
+> Der Spec-Review ist bereits erfolgt und eingearbeitet (§4.1 dienstspezifische
+> Snapshot-Header inkl. `Refresh`, §6 die drei `errors=`-Stellen in
+> `test_pipeline_order.py`, §11 der `SsrfBlocked`-Re-raise). Es gibt nichts mehr zu klären.
+
 - **Story/Issue:** #73 · **Status:** Reviewed · **Phase/Layer:** phase/1-mvp · `archive` · `pipeline` · CLI
 - Methodik: [../docs/engineering.md](../docs/engineering.md) · Regeln: [../docs/rules.md](../docs/rules.md)
 - Baut auf **#4** (Fremdarchiv-Client), **#7** (Pipeline-Order), **#64** (Ingest-CLI).
