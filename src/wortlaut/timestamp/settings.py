@@ -17,7 +17,8 @@ class TimestampSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="WORTLAUT_TSA_")
 
-    profiles: str = "freetsa,sigstore"  # Reihenfolge = Primär, Fallback
+    # Die Reihenfolge ist die Fallback-Kette: erst freetsa, dann sigstore.
+    profiles: str = "freetsa,sigstore"
     timeout_seconds: float = 10.0
     consecutive_failure_limit: int = 5  # Circuit-Breaker, Muster aus #73
 

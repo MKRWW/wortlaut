@@ -159,24 +159,21 @@ async def _run_timestamp(args: argparse.Namespace) -> int:
     Settings → Engine → Stempeler → Pass. Exit: 0 = ok, 2 = Konfiguration,
     3 = Circuit-Breaker, 4 = hash_mismatch.
     """
-    # 1) Settings aus ENV
+    # 1) Settings aus ENV UND Stempeler bauen — beides ist Konfiguration und endet
+    #    im selben Exit 2. Ein gemeinsamer Block, damit es dafür genau EINEN
+    #    Rückgabepunkt gibt (unbekanntes Profil und leere Profilliste werfen
+    #    ValueError, fehlende ENV wirft ValidationError).
     try:
         db_settings = DbSettings()
         worm_settings = WormSettings()
         tsa_settings = TimestampSettings()
+        stamper = FallbackTimeStamper(
+            [
+                Rfc3161Tsa(load_profile(name), timeout_seconds=tsa_settings.timeout_seconds)
+                for name in tsa_settings.profile_names()
+            ]
+        )
     except Exception as e:
-        print(f"Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
-        return 2
-
-    # 2) Stempeler bauen: FallbackTimeStamper über die gepinnten Profile.
-    #    Unbekannter Profilname → ValueError → Exit 2 (Konfiguration).
-    try:
-        stampers = [
-            Rfc3161Tsa(load_profile(name), timeout_seconds=tsa_settings.timeout_seconds)
-            for name in tsa_settings.profile_names()
-        ]
-        stamper = FallbackTimeStamper(stampers)
-    except ValueError as e:
         print(f"Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
         return 2
 
