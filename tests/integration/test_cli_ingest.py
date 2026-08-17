@@ -111,13 +111,19 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, dsn: str, cfg: dict[str, str]) -> 
     monkeypatch.setenv("WORTLAUT_DIP_API_KEY", "dummy-key")
 
 
-def _ingest_args() -> Namespace:
+def _ingest_args(*, no_preflight: bool = False) -> Namespace:
+    """Wie argparse es liefert — inklusive ``no_preflight`` (#77).
+
+    Default ist ``False``: der Pre-Flight-Probe läuft mit, damit der
+    End-to-End-Test belegt, dass er einen gesunden Lauf nicht stört.
+    """
     return Namespace(
         since=datetime(2024, 1, 1),
         rights_basis="amtliches_werk_p5",
         limit=None,
         no_migrate=False,  # CLI migriert die frische DB selbst (Bootstrap-Test)
         dry_run=False,
+        no_preflight=no_preflight,
     )
 
 
@@ -219,7 +225,12 @@ async def test_archive_failed_retried_on_rerun(
             patch("wortlaut.cli.WaybackArchiver", return_value=_ControllableWayback(state)),
             patch("wortlaut.cli.ArchiveTodayArchiver", _FakeArchiver),
         ):
-            return await _run(_ingest_args())
+            # Pre-Flight aus (#77): Lauf 1 fährt ABSICHTLICH mit totem Wayback, um
+            # Resumability zu beweisen. Genau diesen Lauf würde der Pre-Flight in
+            # Produktion (korrekt) schon vorher abbrechen — bliebe er an, prüfte
+            # dieser Test die Schleife darunter nie wieder. Das Endergebnis ist
+            # identisch: 0 Zeilen, Nachholen im nächsten Lauf.
+            return await _run(_ingest_args(no_preflight=True))
 
     engine = create_async_engine_from(DbSettings(dsn=fresh_pg_dsn))
     try:

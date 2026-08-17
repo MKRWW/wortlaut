@@ -131,7 +131,15 @@ injiziert; es gibt keine Credentials, die URL enthält keine Query-Parameter (R-
 - [ ] **AC5** *(Dry-Run)* — *Given* `--dry-run`, *When* der Lauf startet, *Then* wurde **kein**
       Probe-Call abgesetzt und die Dry-Run-Zeile ist unverändert. `[unit]`
 - [ ] **AC6** *(kein Regress)* — *Given* die bestehende Test-Suite, *When* CI, *Then* bleiben alle
-      #73-Tests (Circuit-Breaker, Summary, `reasons=`) unverändert grün. `[ci]`
+      #73-Tests (Circuit-Breaker, Summary, `reasons=`) grün. `[ci]`
+      > **Review-Nachtrag (Architekt):** „unverändert" war zu stark formuliert.
+      > `tests/integration/test_cli_ingest.py` baut sein `Namespace` von Hand und braucht das neue
+      > `no_preflight`-Feld; und `test_archive_failed_retried_on_rerun` (#73/AC10) fährt Lauf 1
+      > **absichtlich mit totem Wayback**, um Resumability zu beweisen — genau diesen Lauf würde der
+      > Pre-Flight in Produktion korrekt abbrechen. Der Test setzt deshalb `no_preflight=True` und
+      > prüft weiterhin die Schleife darunter; das Endergebnis ist identisch (0 Zeilen, Nachholen im
+      > nächsten Lauf). `test_end_to_end_single_source` behält den Probe **an** und belegt damit,
+      > dass er einen gesunden Lauf nicht stört.
 - [ ] **AC7** — CI vollständig grün + **0 neue Sonar-Issues** im PR. `[ci]`
 
 ## 6. Testplan (Test-zu-AC-Mapping)
@@ -151,8 +159,22 @@ injiziert; es gibt keine Credentials, die URL enthält keine Query-Parameter (R-
 
 - **R-CORE-02 unberührt:** Der Probe ändert nichts an „Provenienz zuerst" — er verhindert nur
   Arbeit, die ohnehin nichts persistieren würde.
-- **R-SEC-05 (SSRF):** Die Probe-URL geht durch dieselbe `assert_url_allowed`-Kette wie jede andere
-  Archivierung (sie läuft über `Archiver.archive`). Default ist eine konstante, öffentliche Domain.
+- **R-SEC-05 (SSRF) — korrigiert im Review:** Ein früherer Entwurf dieser Spec behauptete, die
+  Probe-URL laufe durch dieselbe `assert_url_allowed`-Kette wie jede andere Archivierung. **Das ist
+  falsch:** `assert_url_allowed` sitzt in `archive_all`
+  ([../src/wortlaut/archive/archiver.py](../src/wortlaut/archive/archiver.py) Z. 322), **nicht** in
+  `Archiver.archive` — der Probe umgeht sie.
+
+  Warum das trotzdem unbedenklich ist: **wir fetchen die Probe-URL nie selbst.** Sie wird als
+  Pfad-Parameter an `https://web.archive.org/save/<url>` angehängt; der einzige Host, zu dem eine
+  Verbindung aufgebaut wird, ist der konstante, DNS-gepinnte Wayback-Host. Eine interne Adresse als
+  `preflight_url` erzeugt also keinen Request dorthin, sondern nur einen fehlschlagenden
+  Archivierungs-Auftrag bei Wayback. Der Default ist zudem eine konstante, öffentliche Domain, und
+  den ENV-Wert setzt der Betreiber selbst.
+
+  **Bewusst nicht ergänzt:** ein `assert_url_allowed(probe_url)` in `probe_archive` wäre eine
+  billige Konsistenz-Härtung (eine Zeile, ein DNS-Lookup je Lauf). Es ist hier **kein** Muss, weil
+  kein Exfiltrationspfad existiert; wer es will, macht ein eigenes Increment daraus.
 - **R-SEC-01:** keine Credentials, keine Query-Parameter, keine Secrets im Log.
 - **Fremdarchiv-Höflichkeit:** genau **ein** zusätzlicher `/save/`-Call pro Lauf gegen eine
   Domain, die bereits zehntausendfach archiviert ist — vernachlässigbare Last, und billiger als die
@@ -192,6 +214,10 @@ Invarianten gewahrt, kein Secret, keine Live-Calls im CI-Gate. PR referenziert *
 > **NICHT anfassen:** `src/wortlaut/archive/archiver.py`, `retry.py`, `throttle.py`, `ssrf.py`,
 > `pinned.py`, `src/wortlaut/pipeline/**`, `src/wortlaut/store/**`, `src/wortlaut/timestamp/**`,
 > `migrations/`, `pyproject.toml`, alle übrigen Tests.
+>
+> **Architekt zieht nach (nicht der Coder):** `tests/integration/test_cli_ingest.py` — das
+> handgebaute `Namespace` braucht `no_preflight`, und der Resumability-Test opt-outet bewusst
+> (AC6-Nachtrag).
 
 ## 11. Umsetzungsdetails je Datei
 

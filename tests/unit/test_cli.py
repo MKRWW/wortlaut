@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from wortlaut.archive.errors import ArchiveError
+from wortlaut.archive.preflight import PROBE_URL
 from wortlaut.cli import _run, main
 from wortlaut.ingest.adapter import SourceRef
 from wortlaut.ingest.dip import DipFetchError
@@ -29,11 +31,18 @@ class FakeAdapter:
         self.refs: list[SourceRef] = []
         self.discover_exc: Exception | None = None
         self.aclose_called = False
+        self.discover_calls = 0
+        self.fetch_calls = 0
 
     async def discover(self, since: datetime) -> list[SourceRef]:
+        self.discover_calls += 1
         if self.discover_exc is not None:
             raise self.discover_exc
         return self.refs
+
+    async def fetch(self, ref: SourceRef) -> object:
+        self.fetch_calls += 1
+        return object()
 
     async def aclose(self) -> None:
         self.aclose_called = True
@@ -42,6 +51,15 @@ class FakeAdapter:
 class FakeArchiver:
     def __init__(self) -> None:
         self.aclose_called = False
+        self.archive_calls: list[str] = []
+        self.archive_error: ArchiveError | None = None
+        self.archive_result = "https://web.archive.org/snapshot/xyz"
+
+    async def archive(self, origin_url: str) -> str:
+        self.archive_calls.append(origin_url)
+        if self.archive_error is not None:
+            raise self.archive_error
+        return self.archive_result
 
     async def aclose(self) -> None:
         self.aclose_called = True
@@ -82,6 +100,7 @@ def _ns(**kw: object) -> Namespace:
         "limit": None,
         "no_migrate": True,
         "dry_run": False,
+        "no_preflight": False,
     }
     base.update(kw)
     return Namespace(**base)
@@ -110,6 +129,8 @@ def wired() -> Iterator[SimpleNamespace]:
                 retry_base_delay_seconds=2.0,
                 optional_failure_limit=3,
                 consecutive_failure_limit=5,
+                preflight_enabled=True,
+                preflight_url=PROBE_URL,
             ),
         ),
         patch("wortlaut.cli.create_async_engine_from", return_value=engine),
@@ -375,3 +396,89 @@ async def test_summary_reports_dash_when_no_failures(
     out = capfd.readouterr().out
     assert rc == 0
     assert "reasons=-" in out
+
+
+# ── #77: Pre-Flight-Archiv-Health-Check (Spec 0077) ──────────────────────
+
+
+async def test_preflight_failure_aborts_before_discover(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC1: Wayback-Probe wirft ArchiveError -> Exit 3, discover 0×, fetch 0×,
+    Ausgabe nennt 'Pre-Flight' samt Grund und Statuscode — VOR dem ersten Fetch."""
+    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
+    wired.wayback.archive_error = ArchiveError(
+        "wayback", "http_status", status_code=503, transient=True
+    )
+    rc = await _run(_ns())
+    cap = capfd.readouterr()
+    assert rc == 3
+    assert wired.adapter.discover_calls == 0  # kein DIP-Call
+    assert wired.adapter.fetch_calls == 0  # kein Ziel-PDF
+    assert wired.ingest.call_count == 0
+    assert "Pre-Flight" in cap.err
+    assert "503" in cap.err  # Statuscode bleibt in der Meldung erhalten
+
+
+async def test_preflight_healthy_runs_normally(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC2: Probe liefert Snapshot-URL -> Ingest läuft normal weiter (Exit 0,
+    Summary wie bisher). Der Archiver wird für den Probe aufgerufen (1×); die
+    je-Quelle-Aufrufe sind Aufgabe der Pipeline (hier gemockt)."""
+    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
+    rc = await _run(_ns())
+    cap = capfd.readouterr()
+    assert rc == 0
+    # Probe ging raus (1×, neutrale URL) — der Lauf wurde NICHT gestoppt.
+    assert wired.wayback.archive_calls == [PROBE_URL]
+    assert wired.adapter.discover_calls == 1
+    assert wired.ingest.call_count == 2  # beide Refs normal verarbeitet
+    assert "discovered=2" in cap.out  # Summary wie bisher
+
+
+async def test_no_preflight_flag_skips_probe(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC4: --no-preflight -> kein Probe-Call, Lauf verhält sich unverändert (Exit 0)."""
+    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
+    rc = await _run(_ns(no_preflight=True))
+    assert rc == 0
+    assert wired.wayback.archive_calls == []  # kein Probe-Call
+    assert wired.ingest.call_count == 2
+
+
+async def test_preflight_disabled_via_settings_skips_probe(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC4: preflight_enabled=False per ENV -> kein Probe-Call, normaler Lauf."""
+    wired.adapter.refs = [_ref("http://a/p1.pdf")]
+    with patch(
+        "wortlaut.cli.ArchiveSettings",
+        return_value=SimpleNamespace(
+            wayback_min_interval_seconds=5.0,
+            archive_today_min_interval_seconds=15.0,
+            retry_attempts=3,
+            retry_base_delay_seconds=2.0,
+            optional_failure_limit=3,
+            consecutive_failure_limit=5,
+            preflight_enabled=False,
+            preflight_url=PROBE_URL,
+        ),
+    ):
+        rc = await _run(_ns())
+    assert rc == 0
+    assert wired.wayback.archive_calls == []  # kein Probe-Call
+    assert wired.ingest.call_count == 1
+
+
+async def test_dry_run_skips_probe(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC5: --dry-run -> kein Probe-Call, Dry-Run-Zeile unverändert."""
+    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
+    rc = await _run(_ns(dry_run=True))
+    cap = capfd.readouterr()
+    assert rc == 0
+    assert wired.wayback.archive_calls == []  # kein Probe-Call
+    assert "dry_run=True" in cap.out  # Dry-Run-Zeile wörtlich unverändert

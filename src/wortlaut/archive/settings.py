@@ -6,6 +6,8 @@ injiziert (DI) — der Archiver-Layer selbst bleibt pydantic-frei (R-ARCH-02).
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from wortlaut.archive.preflight import PROBE_URL
+
 
 class ArchiveSettings(BaseSettings):
     """Drosselung, Retry und Breaker-Limits für die Fremdarchivierung."""
@@ -18,3 +20,5 @@ class ArchiveSettings(BaseSettings):
     retry_base_delay_seconds: float = 2.0
     optional_failure_limit: int = 3  # archive.today im Lauf stilllegen
     consecutive_failure_limit: int = 5  # Circuit-Breaker für den ganzen Lauf
+    preflight_enabled: bool = True  # ENV WORTLAUT_ARCHIVE_PREFLIGHT_ENABLED
+    preflight_url: str = PROBE_URL  # ENV WORTLAUT_ARCHIVE_PREFLIGHT_URL
