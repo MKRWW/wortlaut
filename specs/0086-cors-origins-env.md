@@ -328,8 +328,10 @@ Den Modul-Docstring um einen Satz ergänzen: die Origins kommen ebenfalls aus de
 
 ## 13. Abschluss (und NUR das an Kommandos ausführen)
 
-```
-uv run ruff format . && uv run ruff check . && uv run mypy && uv run pytest -m "not integration" -q
-```
+- `git status --porcelain` ausgeben. **Sonst nichts.**
 
-Gib die Ausgabe **wörtlich** aus. Keine weiteren Kommandos.
+Das Gate (ruff · mypy · pytest) fährt der Reviewer selbst — ein Selbstbericht des Coders ersetzt
+es nicht. Falls du doch lokal testen willst, ist der Marker-Ausdruck
+`-m "not integration and not live"` zu benutzen: Ein bloßes `-m "not integration"` **ersetzt** den
+`-m "not live"`-Ausdruck aus `addopts` in `pyproject.toml`, statt ihn zu ergänzen — dann laufen die
+echten Fremdarchiv-Calls mit und der Lauf wird aus Netzgründen rot.
