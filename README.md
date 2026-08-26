@@ -9,6 +9,10 @@ Kein „fasse zusammen". Zitierfähig heißt: **Wortlaut oder gar nichts.** Ein 
 das ein Modell geglättet hat, ist eine Behauptung. Der echte Wortlaut nicht — der
 steht da.
 
+> **Du willst helfen?** → **[MITWIRKEN.md](MITWIRKEN.md)** — welche Mitarbeit zu dir
+> passt, was sie kostet, und was gerade gebraucht wird. Die meisten Aufgaben kommen mit
+> dem belastenden Material nie in Berührung.
+
 > *„Ich will Zeugnis ablegen bis zum letzten."* — Victor Klemperer
 
 **Historischer Anker:** Victor Klemperer dokumentierte in *LTI – Lingua Tertii
