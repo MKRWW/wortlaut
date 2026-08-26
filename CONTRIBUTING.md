@@ -1,8 +1,17 @@
 # Mitmachen bei wortlaut
 
-Danke, dass du beitragen willst. `wortlaut` sucht Leute mit **RAG, Archivierung,
-Diarization, Datenqualität und Recht**. Auch nicht-technische Beiträge (juristische
-Prüfung, Quellenrecherche, Doku) sind willkommen.
+Danke, dass du beitragen willst. `wortlaut` sucht Leute mit **Betrieb/DevOps,
+Retrieval** (Embeddings, Vektorsuche, Reranking), **Archivierung, Diarization,
+Datenqualität und Recht**. Auch nicht-technische Beiträge (juristische Prüfung,
+Quellenrecherche, Doku) sind willkommen.
+
+> **Zu Retrieval, weil es oft missverstanden wird:** Ein Modell darf beim **Finden**
+> helfen — Embeddings, Ähnlichkeitssuche, Reranking. **Ausgabetext erzeugt es nie.**
+> Was ein Nutzer zu sehen bekommt, ist immer der wörtliche, gegen den Hash geprüfte
+> Span aus der Datenbank. Ein Zitat, das ein Modell geglättet oder zusammengefasst hat,
+> ist eine Behauptung — und damit wertlos für dieses Projekt. Wer an einem Chatbot über
+> Bundestagsreden bauen will, ist hier falsch; wer Suche besser machen will, sehr richtig.
+> Siehe Prinzip 1 unten; der Serving-Layer ist maschinell dagegen verriegelt.
 
 ## Wo entwickelt wird
 
