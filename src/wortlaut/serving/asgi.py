@@ -12,11 +12,15 @@ nicht über ``fork`` geteilt werden. ``python -m wortlaut serve`` übergibt uvic
 deshalb den Import-String ``"wortlaut.serving.asgi:create_asgi_app"`` mit
 ``factory=True`` — nie eine App-Instanz (sonst würde uvicorn ``workers`` still
 ignorieren, §0b).
+
+Die erlaubten CORS-Origins kommen ebenfalls aus der Umgebung (``ApiSettings``,
+Spec 0086) und werden an ``create_app`` als ``allowed_origins`` durchgereicht.
 """
 
 from fastapi import FastAPI
 
 from wortlaut.serving.app import create_app
+from wortlaut.serving.settings import ApiSettings
 from wortlaut.store.db import create_async_engine_from, make_sessionmaker
 from wortlaut.store.settings import DbSettings, WormSettings
 from wortlaut.store.worm import MinioWormStore
@@ -24,4 +28,8 @@ from wortlaut.store.worm import MinioWormStore
 
 def create_asgi_app() -> FastAPI:
     engine = create_async_engine_from(DbSettings())
-    return create_app(make_sessionmaker(engine), MinioWormStore(WormSettings()))
+    return create_app(
+        make_sessionmaker(engine),
+        MinioWormStore(WormSettings()),
+        allowed_origins=ApiSettings().cors_origins,
+    )

@@ -224,7 +224,9 @@ async def _client(
 ) -> tuple[AsyncClient, dict[str, UUID]]:
     async with fresh_sessions() as session:
         ids = await _seed(session, worm)
-    transport = ASGITransport(app=create_app(fresh_sessions, worm))
+    transport = ASGITransport(
+        app=create_app(fresh_sessions, worm, allowed_origins=["https://wortlaut.io"])
+    )
     return AsyncClient(transport=transport, base_url="http://test"), ids
 
 
