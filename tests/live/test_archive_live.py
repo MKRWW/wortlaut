@@ -20,7 +20,7 @@ async def test_archive_all_live_real_snapshot() -> None:
     nur Wayback muss reliably funktionieren. Testet nur >=1 Erfolg.
     """
     wayback = WaybackArchiver()
-    atoday = ArchiveTodayArchiver(retry_delay=0.0)
+    atoday = ArchiveTodayArchiver(base_delay_seconds=0.0)
 
     try:
         result = await archive_all(
@@ -34,5 +34,5 @@ async def test_archive_all_live_real_snapshot() -> None:
 
     # Mindestens einer der Dienste liefert eine Snapshot-URL
     assert (result.wayback_url is not None) or (result.archive_today_url is not None), (
-        f"no snapshot url from either service; errors: {result.errors}"
+        f"no snapshot url from either service; failures: {result.failures}"
     )

@@ -97,6 +97,11 @@ class VerifyResult(BaseModel):
     span_in_source: bool
     archive_wayback: str | None
     archive_today: str | None
+    # NEU (Spec 0076, additiv): RFC-3161-Zeitstempel. Fehlender Stempel degradiert
+    # nichts (kein Gate) — ok/status bleiben hash-only.
+    timestamp_status: str
+    timestamp_tsa: str | None
+    timestamp_gen_time: datetime | None
 
 
 class SourceEvidence(BaseModel):

@@ -112,3 +112,45 @@ jobs:
       - name: SonarCloud inaktiv (kein Token)
         if: ${{ env.SONAR_TOKEN == '' }}
         run: echo "SONAR_TOKEN nicht gesetzt - SonarCloud-Gate inaktiv (R-QUAL-04). Setup siehe README/CONTRIBUTING."
+
+  docker:
+    name: Docker Image (build + smoke + publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: hadolint (Dockerfile-Lint, AC6)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: error
+      - name: Build (AC1)
+        run: docker build -t wortlaut:ci .
+      - name: Smoke (AC2-AC5)
+        run: |
+          set -euo pipefail
+          uid="$(docker run --rm wortlaut:ci id -u)"
+          [ "$uid" != "0" ] || { echo "AC2 FAIL: laeuft als root"; exit 1; }
+          docker run --rm wortlaut:ci python -m wortlaut ingest --help | grep -q -- '--since'
+          docker run --rm wortlaut:ci python -c "from wortlaut.store.migrations import _MIGRATIONS_DIR; import sys; sys.exit(0 if _MIGRATIONS_DIR.is_dir() else 1)"
+          if docker run --rm wortlaut:ci env | grep -Eiq 'WORTLAUT_.*(KEY|SECRET|PASSWORD)'; then echo "AC5 FAIL: Secret-ENV im Image"; exit 1; fi
+          if grep -Eiq '(KEY|SECRET|PASSWORD)[[:space:]]*=' Dockerfile; then echo "AC5 FAIL: hartkodiertes Secret im Dockerfile"; exit 1; fi
+          echo "docker smoke OK (AC2-AC5)"
+      # Publish nach ghcr.io NUR bei push auf develop/main (nicht aus PRs), nur nach gruenem Smoke (#68).
+      - name: Login ghcr.io (nur push, nicht PR)
+        if: github.event_name == 'push'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Publish nach ghcr.io (nur push, nur smoke-gruen)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          image="ghcr.io/mkrww/wortlaut"
+          sha="${{ github.sha }}"
+          docker tag wortlaut:ci "$image:$sha"
+          docker push "$image:$sha"
+          if [ "${{ github.ref_name }}" = "main" ]; then moving="latest"; else moving="develop"; fi
+          docker tag wortlaut:ci "$image:$moving"
+          docker push "$image:$moving"
+          echo "published $image:$sha and $image:$moving"

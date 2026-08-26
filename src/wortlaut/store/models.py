@@ -213,3 +213,27 @@ class SpanState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class SourceTimestamp(Base):
+    """RFC-3161-Zeitstempel einer Quelle; Inhalt immutabel/append-only (Trigger, Spec 0076 §7).
+
+    Ein RFC-3161-Token einer unabhängigen TSA über den ``content_hash``:
+    anbieterunabhängiger Nachweis, dass diese Bytes zu ``created_at`` existierten
+    (Eigenschaft B). Append-only je ``(source_id, tsa_name)``; kein ``timestamp_pending``-Flag
+    (abgeleiteter Zustand: keine Zeile = pending).
+    """
+
+    __tablename__ = "source_timestamp"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    source_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("source.id"), nullable=False
+    )
+    tsa_name: Mapped[str] = mapped_column(Text, nullable=False)
+    token_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -25,7 +25,7 @@ LINES: list[str] = [
     "Ich rufe Tagesordnungspunkt 3 auf. Das Wort",
     "hat der Abgeordnete Mustermann.",
     "",
-    "Abg. Dr. Max Mustermann (AfD):",
+    "Dr. Max Mustermann (AfD):",
     "Sehr geehrter Herr Präsident, wir lehnen",
     "diesen Entwurf ab.",
     "(Zuruf des Abg. Erika Musterfrau [SPD]: Das ist falsch!)",
@@ -33,7 +33,7 @@ LINES: list[str] = [
     "",
     "Tagesordnungspunkt 4",
     "",
-    "Abg. Erika Musterfrau (SPD):",
+    "Erika Musterfrau (SPD):",
     "Frau Präsidentin, dieser Antrag verdient",
     "die Unterstützung des Hauses.",
 ]
