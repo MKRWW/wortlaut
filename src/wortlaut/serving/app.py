@@ -12,7 +12,7 @@ Definitionszeit einfangen); als Strings wären lokale Namen nicht auflösbar →
 
 import asyncio
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Annotated
 from uuid import UUID
 
@@ -123,12 +123,22 @@ def _source_evidence(row: SourceRow) -> SourceEvidence:
     )
 
 
-def create_app(sessionmaker: async_sessionmaker[AsyncSession], worm: WormStore) -> FastAPI:
-    """Baut die read-only Read-API. ``worm`` nur für /verify (Hash gegen WORM, #8)."""
+def create_app(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    worm: WormStore,
+    *,
+    allowed_origins: Sequence[str],
+) -> FastAPI:
+    """Baut die read-only Read-API. ``worm`` nur für /verify (Hash gegen WORM, #8).
+
+    ``allowed_origins`` kommt aus dem Composition-Root (#86) — bewusst ohne Default:
+    ein vergessenes Verdrahten soll ein Typfehler sein, kein stiller Rückfall auf die
+    Produktions-Herkunft.
+    """
     app = FastAPI(title="wortlaut Read-API", version="1.0.0")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["https://wortlaut.io"],
+        allow_origins=list(allowed_origins),
         allow_methods=["GET"],
         allow_headers=["*"],
     )

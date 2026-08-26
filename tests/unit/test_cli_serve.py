@@ -157,3 +157,24 @@ def test_serve_error_leaks_no_secret(
     assert db_canary not in combined
     assert "minio.internal.example" not in combined
     assert "input_value" not in combined  # kein pydantic-Eingabe-Dict im Log
+
+
+def test_kaputte_cors_env_exit_2(
+    monkeypatch: pytest.MonkeyPatch, serve_env: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """AC6 (Spec 0086): kaputte ``WORTLAUT_API_CORS_ORIGINS`` -> rc 2, uvicorn
+    startet NICHT, kein ENV-Wert in der Ausgabe (nur Feldnamen, R-SEC-01)."""
+    run_calls: list[None] = []
+
+    def fake_run(*a: Any, **kw: Any) -> None:
+        run_calls.append(None)
+
+    monkeypatch.setenv("WORTLAUT_API_CORS_ORIGINS", "https://wortlaut.io/")
+    monkeypatch.setattr("wortlaut.cli.uvicorn.run", fake_run)
+
+    assert main(["serve"]) == 2
+    assert run_calls == []  # uvicorn wurde NICHT gestartet
+    out = capsys.readouterr()
+    assert "Konfiguration fehlgeschlagen" in out.err
+    assert "cors_origins" in out.err  # Feldname wird genannt
+    assert "https://wortlaut.io/" not in out.err  # der Wert bleibt draussen

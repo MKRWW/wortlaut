@@ -82,7 +82,7 @@ class _FakeWorm(WormStore):
 
 async def _client(mode: str) -> tuple[httpx.AsyncClient, _FakeSessionmaker]:
     sm = _FakeSessionmaker(mode)
-    app = create_app(sm, _FakeWorm())
+    app = create_app(sm, _FakeWorm(), allowed_origins=["https://wortlaut.io"])
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test"), sm
 
 
@@ -137,3 +137,24 @@ async def test_readyz_times_out_instead_of_hanging() -> None:
     assert resp.json() == {"detail": "not_ready"}
     assert elapsed < 5
     assert len(sm.sessions) == 1
+
+
+async def test_cors_header_bei_erlaubtem_origin() -> None:
+    """AC3 (Spec 0086): erlaubter ``Origin`` -> Antwort traegt den
+    ``access-control-allow-origin``-Header (httpx normalisiert die Namen —
+    case-insensitiv geprueft)."""
+    client, _sm = await _client("ok")
+    async with client:
+        resp = await client.get("/healthz", headers={"Origin": "https://wortlaut.io"})
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://wortlaut.io"
+
+
+async def test_kein_cors_header_bei_fremdem_origin() -> None:
+    """AC4 (Spec 0086): fremder ``Origin`` -> kein
+    ``access-control-allow-origin``-Header in der Antwort."""
+    client, _sm = await _client("ok")
+    async with client:
+        resp = await client.get("/healthz", headers={"Origin": "https://fremd.example"})
+    assert resp.status_code == 200
+    assert "access-control-allow-origin" not in resp.headers
