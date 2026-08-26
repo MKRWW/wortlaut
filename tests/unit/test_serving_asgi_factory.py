@@ -9,6 +9,8 @@ und ``create_async_engine`` genau 1x (nur zum lazy Engine-Bau) angefasst wird.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -24,6 +26,7 @@ def worm_env(monkeypatch: pytest.MonkeyPatch) -> WormSettings:
     monkeypatch.setenv("WORTLAUT_WORM_ENDPOINT", "minio.example.com:9000")
     monkeypatch.setenv("WORTLAUT_WORM_ACCESS_KEY", "ak")
     monkeypatch.setenv("WORTLAUT_WORM_SECRET_KEY", "sk")
+    monkeypatch.setenv("WORTLAUT_API_CORS_ORIGINS", "https://wortlaut.io,http://localhost:8080")
     return WormSettings()
 
 
@@ -35,7 +38,7 @@ def test_factory_wires_from_env(monkeypatch: pytest.MonkeyPatch, worm_env: WormS
 
     calls: list[tuple[object, object]] = []
 
-    def fake_create_app(sessionmaker: object, worm: object) -> FastAPI:
+    def fake_create_app(sessionmaker: object, worm: object, *, allowed_origins: object) -> FastAPI:
         calls.append((sessionmaker, worm))
         return FastAPI(title="fake")
 
@@ -73,7 +76,7 @@ def test_factory_uses_dsn_from_env(monkeypatch: pytest.MonkeyPatch, worm_env: Wo
         return sentinel
 
     monkeypatch.setattr(db_mod, "create_async_engine", fake_create_async_engine, raising=False)
-    monkeypatch.setattr(asgi_mod, "create_app", lambda sm, worm: sentinel, raising=False)
+    monkeypatch.setattr(asgi_mod, "create_app", lambda sm, worm, **kw: sentinel, raising=False)
     monkeypatch.setattr(asgi_mod, "MinioWormStore", lambda s: object(), raising=False)
 
     assert create_asgi_app() is sentinel
@@ -100,7 +103,7 @@ def test_factory_no_connection_on_build(
         engine_urls.append(url)
         return sentinel_engine
 
-    def fake_create_app(sessionmaker: object, worm: object) -> FastAPI:
+    def fake_create_app(sessionmaker: object, worm: object, *, allowed_origins: object) -> FastAPI:
         create_app_calls.append(sessionmaker)
         return FastAPI(title="fake")
 
@@ -119,3 +122,35 @@ def test_factory_no_connection_on_build(
     assert len(create_app_calls) == 1
     assert isinstance(create_app_calls[0], async_sessionmaker)
     assert store_calls == [worm_env]  # WormStore aus exakt diesen WormSettings
+
+
+def test_origins_durchgereicht(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC7 (Spec 0086): gesetzte ``WORTLAUT_API_CORS_ORIGINS`` -> ``create_app``
+    bekommt exakt die Origins aus ``ApiSettings`` als ``allowed_origins``."""
+    from fastapi import FastAPI
+
+    monkeypatch.setenv("WORTLAUT_DB_DSN", "postgresql+asyncpg://user@dbhost:5432/wortlaut")
+    monkeypatch.setenv("WORTLAUT_WORM_ENDPOINT", "minio.example.com:9000")
+    monkeypatch.setenv("WORTLAUT_WORM_ACCESS_KEY", "ak")
+    monkeypatch.setenv("WORTLAUT_WORM_SECRET_KEY", "sk")
+    monkeypatch.setenv(
+        "WORTLAUT_API_CORS_ORIGINS", "https://staging.wortlaut.io, http://localhost:8080"
+    )
+
+    captured: dict[str, Sequence[str]] = {}
+
+    def fake_create_app(
+        sessionmaker: object, worm: object, *, allowed_origins: Sequence[str]
+    ) -> FastAPI:
+        captured["allowed_origins"] = allowed_origins
+        return FastAPI(title="fake")
+
+    monkeypatch.setattr(asgi_mod, "create_app", fake_create_app)
+    monkeypatch.setattr(asgi_mod, "MinioWormStore", lambda s: object())
+
+    create_asgi_app()
+
+    assert list(captured["allowed_origins"]) == [
+        "https://staging.wortlaut.io",
+        "http://localhost:8080",
+    ]
