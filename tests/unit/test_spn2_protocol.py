@@ -43,8 +43,9 @@ def _error_payload(status_ext: str) -> dict[str, object]:
 def test_status_ext_transienz(status_ext: str, expected: bool) -> None:
     """Fehler im Capture-Payload: der Code ist der Grund, Transienz aus
     der Allowlist (§4.3). ``message`` (Fremdtext) landet NICHT im Fehler."""
+    payload = _error_payload(status_ext)
     with pytest.raises(ArchiveError) as excinfo:
-        job_id_from_payload(_error_payload(status_ext))
+        job_id_from_payload(payload)
     err = excinfo.value
     assert err.service == "wayback"
     assert err.reason == status_ext
@@ -78,8 +79,9 @@ def test_status_ext_allowlist_codes_sind_transient(status_ext: str) -> None:
     """Alle 17 Allowlist-Codes sind transient (§4.3) — auch im
     Status-Abfruf-Pfad (``capture_status_from_payload``)."""
     assert status_ext in TRANSIENT_STATUS_EXT  # die Allowlist ist vollständig
+    payload = _error_payload(status_ext)
     with pytest.raises(ArchiveError) as excinfo:
-        capture_status_from_payload(_error_payload(status_ext))
+        capture_status_from_payload(payload)
     assert excinfo.value.reason == status_ext
     assert excinfo.value.transient is True
 
