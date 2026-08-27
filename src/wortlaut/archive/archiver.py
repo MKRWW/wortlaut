@@ -62,6 +62,16 @@ class ArchiveResult:
     failures: dict[str, ArchiveError]  # {'wayback': ..., 'archive_today': ...} bei Fehlern
 
 
+@dataclass(frozen=True)
+class WaybackTuning:
+    """Stellschrauben für Retry und Polling als EIN Bündel (R-ARCH-04)."""
+
+    attempts: int = 3
+    base_delay_seconds: float = 2.0
+    poll_interval_seconds: float = 3.0
+    poll_timeout_seconds: float = 180.0
+
+
 class Archiver(Protocol):
     """Prototyp-Schnittstelle für Fremdarchiv-Implementierungen."""
 
@@ -71,9 +81,7 @@ class Archiver(Protocol):
 # ── Status-Gate (Spec 0073 §4.1, aufgeteilt in Spec 0108 §4.2) ──────────
 
 
-def _http_error_or_none(
-    response: httpx.Response, *, service: str
-) -> ArchiveError | None:
+def _http_error_or_none(response: httpx.Response, *, service: str) -> ArchiveError | None:
     """Reine HTTP-Statusbewertung — EINE Wahrheit für beide Dienste.
 
     Tabelle:
@@ -198,18 +206,12 @@ class WaybackArchiver:
         *,
         credentials: IaCredentials | None = None,
         limiter: RateLimiter | None = None,
-        attempts: int = 3,
-        base_delay_seconds: float = 2.0,
-        poll_interval_seconds: float = 3.0,
-        poll_timeout_seconds: float = 180.0,
+        tuning: WaybackTuning | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._credentials = credentials
         self._limiter = limiter
-        self._attempts = attempts
-        self._base_delay_seconds = base_delay_seconds
-        self._poll_interval_seconds = poll_interval_seconds
-        self._poll_timeout_seconds = poll_timeout_seconds
+        self._tuning = tuning if tuning is not None else WaybackTuning()
         self._sleep = sleep
         self._client: httpx.AsyncClient | None = None
 
@@ -275,7 +277,10 @@ class WaybackArchiver:
 
         # 2) Polling, bis success oder das Versuchslimit (§4.4: Versuche, nicht
         #    Sekunden — mit der injizierten Sleep deterministisch testbar).
-        max_polls = max(1, int(self._poll_timeout_seconds // self._poll_interval_seconds))
+        max_polls = max(
+            1,
+            int(self._tuning.poll_timeout_seconds // self._tuning.poll_interval_seconds),
+        )
         status = await self._poll_until_success(client, job_id, max_polls)
 
         # 3) Snapshot-URL aus der Erfolgsantwort; 14-stelliger Stempel,
@@ -301,7 +306,7 @@ class WaybackArchiver:
         nicht (§4.4).
         """
         for _poll in range(max_polls):
-            await self._sleep(self._poll_interval_seconds)
+            await self._sleep(self._tuning.poll_interval_seconds)
             try:
                 response = await client.get(f"{SPN2_STATUS_URL}{job_id}", headers=self._headers())
             except httpx.TimeoutException as exc:
@@ -321,8 +326,8 @@ class WaybackArchiver:
         """SPN2-Capture für ``origin_url``; Snapshot NUR aus Erfolgsantwort (§4.1)."""
         return await with_retry(
             lambda: self._attempt(origin_url),
-            attempts=self._attempts,
-            base_delay_seconds=self._base_delay_seconds,
+            attempts=self._tuning.attempts,
+            base_delay_seconds=self._tuning.base_delay_seconds,
         )
 
     async def user_status(self) -> str:

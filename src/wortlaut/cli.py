@@ -18,7 +18,7 @@ from datetime import datetime
 import uvicorn
 from pydantic import ValidationError
 
-from wortlaut.archive.archiver import ArchiveTodayArchiver, WaybackArchiver
+from wortlaut.archive.archiver import ArchiveTodayArchiver, WaybackArchiver, WaybackTuning
 from wortlaut.archive.errors import ArchiveError
 from wortlaut.archive.preflight import probe_archive
 from wortlaut.archive.settings import ArchiveSettings
@@ -80,28 +80,17 @@ def main(argv: list[str] | None = None) -> int:
 async def _run(args: argparse.Namespace) -> int:
     """Composition-Root. Reihenfolge: Settings -> Engine -> Adapter -> Loop."""
     # 1) Settings aus ENV
-    try:
-        db_settings = DbSettings()
-        worm_settings = WormSettings()
-        dip_settings = DipSettings()
-        archive_settings = ArchiveSettings()
-    except Exception as e:
-        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+    loaded = _load_settings()
+    if loaded is None:
         return 2
+    db_settings, worm_settings, dip_settings, archive_settings = loaded
 
     # Zugangsdaten-Pflicht (Spec 0108 §4.5): am Composition-Root, VOR dem
     # ersten Fetch — dort, wo die Konfiguration ohnehin gelesen wird.
     # Save Page Now lehnt anonyme Aufrufe mit 401 ab; ohne Archivierung kein
     # Insert. ``--dry-run`` archiviert nicht und bleibt deshalb erlaubt.
     credentials = _ia_credentials(archive_settings)
-    if credentials is None and not args.dry_run:
-        print(
-            "Konfiguration fehlgeschlagen: keine Internet-Archive-Zugangsdaten "
-            "(WORTLAUT_ARCHIVE_IA_ACCESS_KEY / WORTLAUT_ARCHIVE_IA_SECRET). "
-            "Save Page Now lehnt anonyme Aufrufe mit 401 ab; ohne Archivierung "
-            "kein Insert.",
-            file=sys.stderr,
-        )
+    if _credentials_missing(credentials, dry_run=args.dry_run):
         return 2
 
     engine = create_async_engine_from(db_settings)
@@ -305,6 +294,29 @@ def _config_error(e: Exception) -> str:
     return str(e)
 
 
+def _load_settings() -> tuple[DbSettings, WormSettings, DipSettings, ArchiveSettings] | None:
+    """Alle Settings aus der Umgebung; ``None`` ⇒ Meldung ist raus, Aufrufer gibt 2 zurück."""
+    try:
+        return DbSettings(), WormSettings(), DipSettings(), ArchiveSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return None
+
+
+def _credentials_missing(credentials: IaCredentials | None, *, dry_run: bool) -> bool:
+    """``True`` ⇒ Abbruch mit Exit 2; die Meldung ist dann bereits ausgegeben."""
+    if credentials is not None or dry_run:
+        return False
+    print(
+        "Konfiguration fehlgeschlagen: keine Internet-Archive-Zugangsdaten "
+        "(WORTLAUT_ARCHIVE_IA_ACCESS_KEY / WORTLAUT_ARCHIVE_IA_SECRET). "
+        "Save Page Now lehnt anonyme Aufrufe mit 401 ab; ohne Archivierung "
+        "kein Insert.",
+        file=sys.stderr,
+    )
+    return True
+
+
 async def _aclose_all(*closers: Callable[[], Awaitable[object]]) -> None:
     """Schliesst jede Ressource einzeln; ein Fehler darf die anderen nicht verschlucken."""
     for closer in closers:
@@ -366,10 +378,12 @@ def _build_archivers(
     wayback = WaybackArchiver(
         credentials=credentials,
         limiter=RateLimiter(settings.wayback_min_interval_seconds),
-        attempts=settings.retry_attempts,
-        base_delay_seconds=settings.retry_base_delay_seconds,
-        poll_interval_seconds=settings.spn2_poll_interval_seconds,
-        poll_timeout_seconds=settings.spn2_poll_timeout_seconds,
+        tuning=WaybackTuning(
+            attempts=settings.retry_attempts,
+            base_delay_seconds=settings.retry_base_delay_seconds,
+            poll_interval_seconds=settings.spn2_poll_interval_seconds,
+            poll_timeout_seconds=settings.spn2_poll_timeout_seconds,
+        ),
     )
     atoday_inner = ArchiveTodayArchiver(
         limiter=RateLimiter(settings.archive_today_min_interval_seconds),

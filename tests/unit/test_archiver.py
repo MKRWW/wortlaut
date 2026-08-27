@@ -22,6 +22,7 @@ from wortlaut.archive.archiver import (
     ArchiveResult,
     ArchiveTodayArchiver,
     WaybackArchiver,
+    WaybackTuning,
     archive_all,
 )
 from wortlaut.archive.errors import ArchiveError
@@ -45,7 +46,11 @@ def _spn2_success_payloads() -> list[dict[str, object]]:
     Status → success. Der Mock-Client antwortet auf POST mit der Job-ID."""
     return [
         {"status": "pending"},
-        {"status": "success", "timestamp": "20260101120000", "original_url": "https://example.com/"},
+        {
+            "status": "success",
+            "timestamp": "20260101120000",
+            "original_url": "https://example.com/",
+        },
     ]
 
 
@@ -163,7 +168,7 @@ async def test_archive_all_ssrf_blocked_reraised_not_wrapped() -> None:
 async def test_partial_failure_tolerated() -> None:
     """Wayback Transport-Fehler, archive.today OK → nur wayback_url None,
     ArchiveError('wayback', 'transport') in .failures."""
-    wayback = WaybackArchiver(attempts=1)
+    wayback = WaybackArchiver(tuning=WaybackTuning(attempts=1))
     mock_client_wb = AsyncMock()
     mock_client_wb.post.side_effect = httpx.RemoteProtocolError("connection refused")
     wayback._client = mock_client_wb
@@ -190,7 +195,7 @@ async def test_partial_failure_tolerated() -> None:
 @pytest.mark.asyncio
 async def test_total_failure_reported() -> None:
     """Beide Dienste werfen → beide URLs None, beide Keys in .failures."""
-    wayback = WaybackArchiver(attempts=1)
+    wayback = WaybackArchiver(tuning=WaybackTuning(attempts=1))
     mock_client_wb = AsyncMock()
     mock_client_wb.post.side_effect = httpx.RemoteProtocolError("connection refused")
     wayback._client = mock_client_wb
@@ -216,7 +221,7 @@ async def test_total_failure_reported() -> None:
 async def test_archive_all_failures_structured() -> None:
     """AC12: archive_all, beide Dienste schlagen fehl → beide URLs None und
     `failures` enthält für BEIDE Dienste ein ArchiveError mit gesetztem reason."""
-    wayback = WaybackArchiver(attempts=1)
+    wayback = WaybackArchiver(tuning=WaybackTuning(attempts=1))
     mock_client_wb = AsyncMock()
     mock_client_wb.post.return_value = _mock_response(404)
     wayback._client = mock_client_wb

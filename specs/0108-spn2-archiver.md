@@ -794,3 +794,86 @@ bleiben **wortgleich** — AC16 und AC17 dürfen sich nicht ändern.
 ### 14.9 Abschluss
 
 - `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.
+
+---
+
+## 15. Zweite Review-Runde: Testlücken, die der Mutationstest aufgedeckt hat
+
+Nach dem Nachtrag sind alle Gates grün (ruff · format · mypy · import-linter · 219 Tests ·
+88 % Coverage), und acht Mutationen an den Beweis- und Sicherheitspfaden werden korrekt rot —
+darunter die schärfste, das Zurückverdrahten der alten Drosselung.
+
+**Fünf Mutationen bleiben grün.** Sie betreffen Code, den §5 ausdrücklich als AK benennt, den
+aber kein Test wirklich trifft. Nach der Review-Checkliste (Punkt 1: „nennt die Spec ein
+Verhalten, prüft es aber kein Test → halbe Umsetzung") ist das ein Veto, kein Schönheitsfehler.
+
+### 15.1 `WaybackArchiver.user_status()` ist vollständig ungetestet
+
+AC14/AC15 verlangen wörtlich „**ein Transport**, der auf `GET /save/status/user` antwortet".
+Umgesetzt wurden sie mit einem Fake, der `user_status` selbst ersetzt. Das prüft den Vertrag von
+`probe_archive` — richtig und behaltenswert — lässt aber die **Produktions-HTTP-Implementierung
+des Lauf-Gates** ohne jede Prüfung. Grün blieben:
+
+| Mutation | Folge im Betrieb |
+|---|---|
+| `SPN2_USER_STATUS_URL` → `…/save/status/kaputt` | Pre-Flight fragt einen Endpunkt, den es nicht gibt |
+| `user_status` ruft `SPN2_SAVE_URL` statt der Status-URL | **Der Pre-Flight setzt einen echten Capture ab** — verbraucht Kontingent, genau das, was §0b verhindern soll |
+| `user_status` sendet `self._headers()` nicht mehr | Kein `Authorization` → 401, aber niemand merkt die Ursache |
+
+Die mittlere Zeile ist der Grund für die Dringlichkeit: Sie verwandelt den Health-Check still
+zurück in das, was dieses Increment gerade abgeschafft hat.
+
+**Zu ergänzen in `tests/unit/test_archiver_spn2.py`** (der Fake-Test in `test_preflight.py`
+bleibt unverändert — er prüft eine andere Naht):
+
+- `test_user_status_trifft_status_endpunkt_mit_auth` — Transport zeichnet die Requests auf,
+  antwortet auf `/save/status/user` mit
+  `{"processing":0,"available":3,"daily_captures":0,"daily_captures_limit":30000}`.
+  Zusicherungen: **genau ein** Request · Methode `GET` · `request.url.path ==
+  "/save/status/user"` · `Authorization` beginnt mit `"LOW "` · das Ergebnis enthält
+  `available=3` und `daily_captures=0/30000` · **kein** Request ging an `/save`.
+  Der Pfad-Vergleich muss **exakt** sein (`==`, nicht `in`), sonst überlebt die
+  Save-URL-Mutation.
+- `test_user_status_401_wirft_unauthorized` — Transport antwortet 401; erwartet
+  `ArchiveError` mit `reason == "unauthorized"`, `status_code == 401`, `transient is False`.
+
+### 15.2 `invalid_response` ist ungetestet
+
+`_json_or_error` wirft bei nicht-dekodierbarem oder nicht-dict-förmigem Body einen permanenten
+`invalid_response`. Ersetzt man das Werfen durch ein stilles `return {}`, bleibt alles grün —
+ein kaputter Body würde dann als leerer Payload weiterlaufen und erst später als `no_job_id`
+auffallen, mit falscher Ursache im Log.
+
+- `test_kaputter_body_ist_invalid_response` — Transport antwortet auf den POST mit
+  `200` und Text `"kein json"`; erwartet `ArchiveError` mit `reason == "invalid_response"`
+  und `transient is False`.
+
+### 15.3 Das Status-Gate im **Poll**-Pfad ist ungetestet
+
+AC10 deckt die 401 auf dem Capture-Request ab. Auf dem Status-Abruf ist `_http_error_or_none`
+ungeprüft: Entfernt man den Aufruf dort, bleibt alles grün. Im Betrieb hieße das, ein mitten im
+Lauf ungültig gewordener Schlüssel (oder ein 5xx) würde als „noch nicht fertig" gelesen und liefe
+stumm ins Polling-Limit — mit `capture_timeout` als irreführendem Grund.
+
+- `test_401_beim_status_abruf_ist_unauthorized` — POST liefert regulär eine `job_id`, der
+  **Status-Abruf** antwortet 401; erwartet `ArchiveError` mit `reason == "unauthorized"`,
+  und der Fehler kommt **vor** dem Polling-Limit (also nach dem ersten Status-Abruf).
+
+### 15.4 Do-NOT
+
+- **KEINE** Änderung an Produktivcode. Dieser Abschnitt ergänzt ausschließlich Tests; alle fünf
+  Mutationen müssen an **unverändertem** `archiver.py`/`spn2.py` rot werden.
+- **KEIN** Umbau von `tests/unit/test_preflight.py` — der Fake dort prüft den Vertrag von
+  `probe_archive` und bleibt, wie er ist.
+- **KEIN** Aufweichen bestehender Zusicherungen, um die neuen Tests einzupassen.
+- Die Sonar-Hinweise aus §11 gelten weiter: nur der Aufruf unter Test im `pytest.raises`-Block,
+  Request-Liste als lokale Closure, keine ausgeschriebenen schlüsselartigen Literale.
+- Alles aus §12 und §14.7 gilt unverändert weiter.
+
+### 15.5 Files (NUR diese)
+
+**Ändern:** `tests/unit/test_archiver_spn2.py`
+
+### 15.6 Abschluss
+
+- `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.

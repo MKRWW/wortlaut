@@ -145,7 +145,10 @@ def test_capture_status_success_pending_und_fehlend() -> None:
 def test_snapshot_url_baut_exakte_url() -> None:
     """14-stelliger Stempel → exakt die in §0a gemessene Form."""
     url = snapshot_url("20260827142259", "https://dserver.bundestag.de/btp/21/21089.pdf")
-    assert url == "https://web.archive.org/web/20260827142259/https://dserver.bundestag.de/btp/21/21089.pdf"
+    assert (
+        url
+        == "https://web.archive.org/web/20260827142259/https://dserver.bundestag.de/btp/21/21089.pdf"
+    )
 
 
 def test_ungueltiger_zeitstempel_wirft() -> None:

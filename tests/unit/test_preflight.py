@@ -24,9 +24,7 @@ class UserStatusHealth:
     def __init__(self) -> None:
         self.user_status_calls = 0
         self.archive_calls = 0
-        self.summary: str = (
-            "available=3 processing=0 daily_captures=0/30000"
-        )
+        self.summary: str = "available=3 processing=0 daily_captures=0/30000"
         self.error: ArchiveError | None = None
 
     async def user_status(self) -> str:

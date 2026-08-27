@@ -1,4 +1,5 @@
-"""CLI Unit-Tests AC1-AC8 (+ main/__main__ Coverage, #73 Breaker, #77/#108 Pre-Flight) — keine Live-Netz-/DB-Calls."""
+"""CLI Unit-Tests AC1-AC8 (+ main/__main__ Coverage, #73 Breaker,
+#77/#108 Pre-Flight) — keine Live-Netz-/DB-Calls."""
 
 from __future__ import annotations
 

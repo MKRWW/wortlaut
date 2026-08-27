@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
-from wortlaut.archive.archiver import WaybackArchiver
+from wortlaut.archive.archiver import WaybackArchiver, WaybackTuning
 from wortlaut.archive.errors import ArchiveError
 from wortlaut.archive.spn2 import IaCredentials
 
@@ -52,7 +51,7 @@ def _archiver_with_transport(
     *,
     requests: list[httpx.Request],
     credentials: IaCredentials | None = None,
-    **kwargs: Any,
+    tuning: WaybackTuning | None = None,
 ) -> WaybackArchiver:
     """WaybackArchiver mit Mock-Transport; der Handler füllt ``requests`` (Closure)."""
 
@@ -60,13 +59,15 @@ def _archiver_with_transport(
         requests.append(request)
         return handler(request)
 
-    wayback = WaybackArchiver(credentials=credentials, sleep=_SleepRecorder(), **kwargs)
+    wayback = WaybackArchiver(credentials=credentials, tuning=tuning, sleep=_SleepRecorder())
     client = httpx.AsyncClient(transport=httpx.MockTransport(_record), follow_redirects=False)
     wayback._client = client
     return wayback
 
 
-def _capture_handler(job_id: str, success_payload: dict[str, object]):
+def _capture_handler(
+    job_id: str, success_payload: dict[str, object]
+) -> Callable[[httpx.Request], httpx.Response]:
     """Handler: POST /save → job_id; Status-Abruf → ``success_payload``."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -155,9 +156,7 @@ async def test_polling_bis_success_baut_snapshot_url() -> None:
 
     # Die injizierte Sleep ist sofort — das Interval ist deshalb nur die
     # Versuchszahl-Basis (default 3.0), nie reale Wartezeit.
-    wayback = _archiver_with_transport(
-        handler, requests=requests, credentials=_credentials()
-    )
+    wayback = _archiver_with_transport(handler, requests=requests, credentials=_credentials())
 
     result = await wayback.archive("https://beispiel.test/x")
 
@@ -171,27 +170,26 @@ async def test_polling_timeout() -> None:
     realen ``asyncio.sleep`` bedient (keine reale Wartezeit)."""
     requests: list[httpx.Request] = []
     sleep = _SleepRecorder()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/save":
+            return httpx.Response(
+                200,
+                json={
+                    "url": "https://beispiel.test/x",
+                    "job_id": "spn2-abc",
+                },
+            )
+        return httpx.Response(200, json={"status": "pending"})
+
     wayback = WaybackArchiver(
         credentials=_credentials(),
-        poll_interval_seconds=3.0,
-        poll_timeout_seconds=9.0,
+        tuning=WaybackTuning(poll_interval_seconds=3.0, poll_timeout_seconds=9.0),
         sleep=sleep,
     )
     client = httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            lambda request: (
-                requests.append(request),
-                httpx.Response(
-                    200,
-                    json={
-                        "url": "https://beispiel.test/x",
-                        "job_id": "spn2-abc",
-                    }
-                    if request.url.path == "/save"
-                    else {"status": "pending"},
-                ),
-            )[1]
-        ),
+        transport=httpx.MockTransport(handler),
         follow_redirects=False,
     )
     wayback._client = client
@@ -218,7 +216,7 @@ async def test_401_ist_permanent_und_ohne_retry() -> None:
         return httpx.Response(401, json={"message": "You need to be logged in."})
 
     wayback = _archiver_with_transport(
-        handler, requests=requests, credentials=_credentials(), attempts=3
+        handler, requests=requests, credentials=_credentials(), tuning=WaybackTuning(attempts=3)
     )
 
     with pytest.raises(ArchiveError) as excinfo:
@@ -244,7 +242,7 @@ async def test_secret_nicht_im_log(caplog: pytest.LogCaptureFixture) -> None:
         return httpx.Response(500, json={"detail": "intern"})
 
     wayback = _archiver_with_transport(
-        handler, requests=requests, credentials=_credentials(), attempts=1
+        handler, requests=requests, credentials=_credentials(), tuning=WaybackTuning(attempts=1)
     )
 
     with pytest.raises(ArchiveError):
