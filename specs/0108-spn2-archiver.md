@@ -994,3 +994,60 @@ Kein Produktivcode. Alles aus §12, §14.7, §15.4 und §16 gilt unverändert we
 ### 17.3 Abschluss
 
 - `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.
+
+---
+
+## 18. CI-Befund: zwei `python:S5778` im Sonar-Issues-Gate
+
+Alle CI-Jobs sind grün (Lint · Type · Test · Coverage inkl. Integration · Security-Gate ·
+Architektur-Fitness · Docker-Smoke). Das Sonar-Issues-Gate meldet **zwei offene Issues**;
+die Merge-Latte ist „alles grün **plus 0 neue Sonar-Issues**".
+
+```
+MAJOR  python:S5778  tests/unit/test_spn2_protocol.py:46
+MAJOR  python:S5778  tests/unit/test_spn2_protocol.py:81
+       Refactor this exception test to have only one invocation possibly throwing an exception.
+```
+
+### 18.1 Ursache
+
+In beiden `pytest.raises`-Blöcken steht **ein** Statement, aber **zwei** Aufrufe: der Aufruf
+unter Test *und* der Helfer `_error_payload(...)`, der sein Argument baut. Schlüge der Helfer
+fehl, wäre der Test grün, ohne je die Funktion unter Test erreicht zu haben — genau die
+Verwechslung, die S5778 verhindern soll.
+
+Die Regel steht bereits in §11 („Hilfsaufrufe **vor** den Block hoisten"); die
+Payload-Konstruktion wurde dort nur nicht als solcher Hilfsaufruf erkannt.
+
+### 18.2 Behebung
+
+In beiden Tests den Payload **vor** den Block bauen, sodass im Block nur noch der Aufruf unter
+Test steht:
+
+```python
+payload = _error_payload(status_ext)
+with pytest.raises(ArchiveError) as excinfo:
+    job_id_from_payload(payload)
+```
+
+analog in `test_status_ext_allowlist_codes_sind_transient` mit
+`capture_status_from_payload(payload)`.
+
+Die Zusicherungen bleiben unverändert. Das `assert status_ext in TRANSIENT_STATUS_EXT` im
+zweiten Test steht bereits vor dem Block und bleibt, wo es ist.
+
+### 18.3 Do-NOT
+
+- **KEIN** Unterdrücken der Regel (`# NOSONAR`, `noqa`, Ausnahme in der Sonar-Konfiguration).
+- **KEINE** Änderung an Produktivcode und an keiner anderen Testdatei — die Prüfung mit dem
+  richtigen Kriterium (Anzahl **Aufrufe** im Block, nicht Anzahl Statements) hat im gesamten
+  Branch-Diff genau diese zwei Stellen ergeben.
+- Alles aus §12, §14.7, §15.4, §16 und §17 gilt unverändert weiter.
+
+### 18.4 Files (NUR diese)
+
+**Ändern:** `tests/unit/test_spn2_protocol.py`
+
+### 18.5 Abschluss
+
+- `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.
