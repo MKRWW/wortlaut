@@ -1,0 +1,91 @@
+# wortlaut — Vorlage fuer den Betrieb auf einem Dedicated (#92).
+#
+# Diese Datei enthaelt KEINE Werte. Alles Konkrete steht in einer .env-Datei
+# NEBEN dieser Datei, ausserhalb des Repos. Kopiervorlage: deploy/env.example
+#
+#   cp deploy/env.example /srv/wortlaut/.env    # dann Werte eintragen
+#   docker compose --env-file /srv/wortlaut/.env -f compose.yml up -d
+#
+# Die Reihenfolge der Inbetriebnahme steht in docs/deploy.md. Wichtigster Punkt
+# vorweg: `serve` migriert NICHT. Vor dem ersten Start muss der Bootstrap laufen.
+
+name: wortlaut
+
+services:
+  db:
+    # pgvector ist Pflicht (Migration 0001 legt die Extension an).
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Kein Port nach aussen: nur die anderen Container sprechen mit der DB.
+
+  worm:
+    # Object-Lock-faehiger Objektspeicher. ACHTUNG: den Bucket NICHT von Hand
+    # anlegen — Object-Lock ist nur bei der Erstellung setzbar, und wortlaut legt
+    # ihn beim Bootstrap korrekt an. Ein von Hand erzeugter Bucket sieht identisch
+    # aus und hat die WORM-Garantie still verloren.
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${WORTLAUT_WORM_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${WORTLAUT_WORM_SECRET_KEY}
+    volumes:
+      - worm-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    # Immer auf einen konkreten Commit pinnen, nie auf ein bewegliches Tag.
+    # `develop` und `latest` wandern bei jedem Push — ein Neustart wuerde dann
+    # unbemerkt eine andere Version starten.
+    image: ghcr.io/mkrww/wortlaut:${WORTLAUT_IMAGE_SHA}
+    restart: unless-stopped
+    command: ["python", "-m", "wortlaut", "serve"]
+    environment:
+      WORTLAUT_DB_DSN: ${WORTLAUT_DB_DSN}
+      WORTLAUT_WORM_ENDPOINT: ${WORTLAUT_WORM_ENDPOINT}
+      WORTLAUT_WORM_ACCESS_KEY: ${WORTLAUT_WORM_ACCESS_KEY}
+      WORTLAUT_WORM_SECRET_KEY: ${WORTLAUT_WORM_SECRET_KEY}
+      WORTLAUT_WORM_SECURE: ${WORTLAUT_WORM_SECURE}
+      WORTLAUT_API_CORS_ORIGINS: ${WORTLAUT_API_CORS_ORIGINS}
+      WORTLAUT_API_WORKERS: ${WORTLAUT_API_WORKERS}
+    depends_on:
+      db:
+        condition: service_healthy
+      worm:
+        condition: service_healthy
+    healthcheck:
+      # /healthz ist Liveness OHNE DB-Zugriff — beantwortet nur "der Prozess lebt".
+      # Fuer "darf Verkehr bekommen" ist /readyz zustaendig (siehe docs/deploy.md).
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Kein `ports:`. Der Zugang laeuft ueber den Tunnel, nicht ueber einen
+    # offenen Port am Host (Spec 0081 §2: Zugangskontrolle macht Cloudflare Access).
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${TUNNEL_TOKEN}"]
+    depends_on:
+      - api
+
+volumes:
+  db-data:
+  worm-data:
