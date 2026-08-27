@@ -638,3 +638,159 @@ Coders ersetzt es nicht. Falls du doch lokal testen willst, ist der Marker-Ausdr
 `-m "not integration and not live"` zu benutzen: Ein bloßes `-m "not integration"` **ersetzt** den
 `-m "not live"`-Ausdruck aus `addopts` in `pyproject.toml`, statt ihn zu ergänzen — dann laufen die
 echten Fremdarchiv-Calls mit und der Lauf wird aus Netzgründen rot.
+
+---
+
+## 14. Nachtrag nach dem ersten Review (Gate rot)
+
+Der erste Durchlauf hat den Kern korrekt umgesetzt — genau die 13 Dateien aus §10, keine
+Extras, Protokoll und Archiver wie spezifiziert. Vier Gates standen trotzdem rot. **Zwei davon
+sind Lücken dieser Spec, nicht Fehler der Umsetzung**; sie werden hier nachgezogen, statt
+stillschweigend repariert zu werden.
+
+### 14.1 Spec-Lücke: `tests/unit/test_archive_retry.py` fehlte in §10
+
+Die Datei fährt `WaybackArchiver._attempt` über einen gemockten `client.get` — den
+Browser-Pfad. Mit dem POST-Fluss laufen alle vier Tests in
+`TypeError: '<=' not supported between instances of 'int' and 'AsyncMock'`, weil
+`client.post` nun ein automatisch erzeugtes `AsyncMock` liefert, dessen `status_code` kein int
+ist.
+
+**Die Datei kommt in die Files-Liste und wird portiert, nicht gelöscht.** Sie bewacht #73 AC1–AC3
+(Retry, exponentieller Backoff, Drosselung pro Versuch), und
+`test_archive_retries_through_public_api_and_throttles_each_attempt` ist der Test, der prüft, dass
+der Retry **in der Produktionsverdrahtung** liegt und nicht im Test zusammengebaut wird. Genau
+diese Eigenschaft ist beim Umbau am leichtesten zu verlieren.
+
+Portierung, Test für Test — Zusicherungen bleiben inhaltlich, nur der Transportweg ändert sich:
+
+- `_client_with_responders` bekommt **zwei** Listen: `post_responders` für den Capture-Request
+  und einen festen Status-Responder. Also `mock_client.post.side_effect = post_responders` und
+  `mock_client.get.return_value = <200 mit success-Payload>`.
+- Der success-Payload ist
+  `{"status":"success","timestamp":"20260101120000","original_url":"https://example.com/"}`;
+  die erwartete Snapshot-URL damit
+  `https://web.archive.org/web/20260101120000/https://example.com/`.
+- Der POST-Erfolg liefert `{"url":"https://example.com/","job_id":"spn2-abc"}`.
+- **Zwei Sleeps sauber trennen.** Der Retry-Backoff läuft weiter über die in `with_retry`
+  injizierte Funktion (`sleep_calls == [2.0]` bzw. `[2.0, 4.0]` bleiben unverändert). Der
+  **Polling**-Sleep ist ein anderer und gehört in einen eigenen Rekorder, der dem Konstruktor
+  übergeben wird. Wer beide auf dieselbe Liste legt, macht die Backoff-Zusicherung wertlos.
+- `assert client.get.call_count == N` wird zu `assert client.post.call_count == N` — gezählt
+  werden die **Capture-Versuche**, nicht die Status-Abrufe.
+- `test_wayback_404_no_retry` bleibt inhaltlich gleich; die 404 kommt jetzt auf den POST.
+- **`test_archive_retries_through_public_api_and_throttles_each_attempt` braucht zwingend einen
+  injizierten Poll-Sleep.** Der Test ruft `archive()` echt auf; mit dem Default würde er real
+  3 Sekunden pro Status-Abruf warten (R-TEST-03: kein Test wartet real).
+
+### 14.2 Spec-Lücke: `__init__` sprengt R-ARCH-04 (ruff PLR0913, 7 > 5)
+
+Die in §3 vorgegebene Signatur hat sieben Parameter. Das ist ein Verstoß gegen die Hausregel
+„≤5 Params", und die Regel hat hier recht: vier der sieben sind Stellschrauben derselben Sache.
+
+Sie werden gebündelt — dasselbe Muster wie `PipelineDeps`:
+
+```python
+@dataclass(frozen=True)
+class WaybackTuning:
+    """Stellschrauben für Retry und Polling als EIN Bündel (R-ARCH-04)."""
+    attempts: int = 3
+    base_delay_seconds: float = 2.0
+    poll_interval_seconds: float = 3.0
+    poll_timeout_seconds: float = 180.0
+```
+
+in `archiver.py` (nicht in `spn2.py` — das bleibt reines Protokoll). Neue Signatur:
+
+```python
+def __init__(self, *, credentials: IaCredentials | None = None,
+             limiter: RateLimiter | None = None,
+             tuning: WaybackTuning | None = None,
+             sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+    self._tuning = tuning if tuning is not None else WaybackTuning()
+```
+
+**Default `None`, nicht `WaybackTuning()`** — ein Aufruf im Default-Argument ist ruff B008.
+
+Alle Aufrufstellen mitziehen: `cli.py._build_archivers` baut das Bündel aus `ArchiveSettings`,
+und die Tests, die heute `attempts=`/`base_delay_seconds=` übergeben oder `wayback._attempts`
+lesen, benutzen `tuning=WaybackTuning(...)` bzw. `wayback._tuning.attempts`.
+`ArchiveTodayArchiver` bleibt **unverändert** — es hat nur vier Parameter und kein Polling.
+
+### 14.3 Spec-Lücke: `_run` sprengt PLR0915 (53 > 50)
+
+`_run` lag vor diesem Increment schon dicht am Limit; die vier Zeilen der Zugangsdaten-Pflicht
+haben es gekippt. Zwei behutsame Extraktionen bringen es darunter, ohne Verhalten zu ändern:
+
+```python
+def _load_settings() -> tuple[DbSettings, WormSettings, DipSettings, ArchiveSettings] | None:
+    """Alle Settings aus der Umgebung; ``None`` ⇒ Meldung ist raus, Aufrufer gibt 2 zurück."""
+    try:
+        return DbSettings(), WormSettings(), DipSettings(), ArchiveSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return None
+
+
+def _credentials_missing(credentials: IaCredentials | None, *, dry_run: bool) -> bool:
+    """``True`` ⇒ Abbruch mit Exit 2; die Meldung ist dann bereits ausgegeben."""
+```
+
+In `_run` bleiben davon sechs Zeilen:
+
+```python
+loaded = _load_settings()
+if loaded is None:
+    return 2
+db_settings, worm_settings, dip_settings, archive_settings = loaded
+
+credentials = _ia_credentials(archive_settings)
+if _credentials_missing(credentials, dry_run=args.dry_run):
+    return 2
+```
+
+Der Meldungstext und das Verhalten (Exit 2, beide ENV-Namen genannt, `--dry-run` erlaubt)
+bleiben **wortgleich** — AC16 und AC17 dürfen sich nicht ändern.
+
+### 14.4 mypy in `tests/unit/test_archiver_spn2.py`
+
+- Zeile ~69: `def _capture_handler(job_id, success_payload)` braucht die Rückgabe-Annotation
+  `-> Callable[[httpx.Request], httpx.Response]`.
+- Zeile ~183: Der Handler ist als Lambda mit Tupel-Trick gebaut
+  (`(requests.append(request), httpx.Response(...))[1]`). Das ist der mypy-Fehler
+  `func-returns-value` und obendrein schwer lesbar. Durch eine **benannte innere Funktion**
+  ersetzen, die anhängt und dann zurückgibt — so wie es der Handler weiter oben in derselben
+  Datei bereits macht.
+
+### 14.5 Kleinigkeiten
+
+- `tests/unit/test_cli.py` Zeile 1: Modul-Docstring ist 118 Zeichen (E501, Limit 100) — umbrechen.
+- `deploy/env.example`: „PFlichtfelder" → „Pflichtfelder".
+
+### 14.6 Formatierung
+
+`ruff format` meldet fünf Dateien: `archiver.py`, `test_archiver.py`, `test_archiver_spn2.py`,
+`test_preflight.py`, `test_spn2_protocol.py`. Formatieren.
+
+### 14.7 Do-NOT für den Nachtrag
+
+- **KEIN** Löschen oder Auskommentieren von Tests aus `tests/unit/test_archive_retry.py`, um
+  das Gate grün zu bekommen. Die vier Tests werden **portiert**.
+- **KEIN** `# noqa: PLR0913` / `PLR0915` statt der Extraktion.
+- **KEINE** Änderung an den Meldungstexten aus §11 (AC16/AC17 hängen daran).
+- **KEINE** Änderung an `spn2.py`, `preflight.py`, `settings.py` und `deploy/env.example`
+  außer dem Tippfehler in 14.5 — die sind abgenommen.
+- Alles aus §12 gilt unverändert weiter.
+
+### 14.8 Files für den Nachtrag (NUR diese)
+
+**Ändern:** `src/wortlaut/archive/archiver.py` · `src/wortlaut/cli.py` ·
+`tests/unit/test_archive_retry.py` · `tests/unit/test_archiver_spn2.py` ·
+`tests/unit/test_archiver.py` · `tests/unit/test_cli.py` · `tests/unit/test_preflight.py` ·
+`tests/unit/test_spn2_protocol.py` · `deploy/env.example`
+
+(Die letzten vier nur, soweit 14.2, 14.4, 14.5 und 14.6 es verlangen.)
+
+### 14.9 Abschluss
+
+- `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.
