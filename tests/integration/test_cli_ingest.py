@@ -47,6 +47,10 @@ class _FakeArchiver:
     async def archive(self, origin_url: str) -> str:
         return "https://web.archive.org/snap"
 
+    async def user_status(self) -> str:
+        """Pre-Flight-Probe (§0b) — der Fake antwortet wie ein gesundes Konto."""
+        return "available=3 processing=0 daily_captures=0/30000"
+
     async def aclose(self) -> None:
         pass
 
@@ -204,6 +208,10 @@ class _ControllableWayback:
         if self._state.fail:
             raise ArchiveError("wayback", "http_status", status_code=503, transient=True)
         return "https://web.archive.org/snap-0073-resume"
+
+    async def user_status(self) -> str:
+        """Pre-Flight-Probe (§0b) — der Fake antwortet wie ein gesundes Konto."""
+        return "available=3 processing=0 daily_captures=0/30000"
 
     async def aclose(self) -> None:
         pass
