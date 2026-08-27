@@ -317,13 +317,22 @@ async def test_user_status_401_wirft_unauthorized() -> None:
     assert err.transient is False
 
 
-async def test_kaputter_body_ist_invalid_response() -> None:
-    """§15.2: nicht-dekodierbarer Body auf den POST → permanentes
-    ``invalid_response`` — kein stilles Weiterlaufen mit leerem Payload."""
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b"kein json", id="kein-json"),
+        pytest.param(b"[1, 2, 3]", id="json-aber-kein-objekt"),
+    ],
+)
+async def test_kaputter_body_ist_invalid_response(body: bytes) -> None:
+    """§15.2/§16.2: Beide Zweige von ``_json_or_error`` → permanentes
+    ``invalid_response`` — ein Body, der gar kein JSON ist, und ein Body,
+    der gültiges JSON ist, aber kein Objekt. Kein stilles Weiterlaufen mit
+    leerem Payload (stilles ``return {}`` würde beide Zweige überleben)."""
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"kein json")
+        return httpx.Response(200, content=body)
 
     wayback = _archiver_with_transport(
         handler, requests=requests, credentials=_credentials(), tuning=WaybackTuning(attempts=1)

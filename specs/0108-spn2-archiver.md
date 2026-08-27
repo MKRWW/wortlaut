@@ -942,3 +942,55 @@ Kein Produktivcode. Alles aus §12, §14.7 und §15.4 gilt unverändert weiter.
 ### 16.4 Abschluss
 
 - `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.
+
+---
+
+## 17. Vierte Review-Runde: der letzte Befund
+
+§16 ist umgesetzt. **Alle dreizehn Mutationen** an den Beweis- und Sicherheitspfaden werden
+erkannt, Unit-Gates grün, Coverage 88 %. Ein Integrationstest bleibt rot:
+
+```
+FAILED tests/integration/test_cli_ingest.py::test_end_to_end_single_source
+  AttributeError: '_FakeArchiver' object has no attribute 'user_status'
+  src/wortlaut/archive/preflight.py:52
+```
+
+### 17.1 Die Archiver-Doubles sind unvollständige Stellvertreter
+
+Der Test ersetzt die **Klasse** (`patch("wortlaut.cli.WaybackArchiver", _FakeArchiver)`). Solange
+der Pre-Flight `archive()` rief, genügte das Double; seit §0b ruft er `user_status()`, und das
+Double kennt die Methode nicht.
+
+Das ist kein Fehler des Pre-Flights, sondern eine Folge der Schnittstellen-Änderung, die diese
+Spec nicht zu Ende verfolgt hat: Wer eine Klasse ersetzt, muss ihre Schnittstelle vollständig
+nachbilden. `tests/unit/test_cli.py::FakeArchiver` hat `user_status` bereits — die
+Integrationsseite fehlt.
+
+**Zu ergänzen in `tests/integration/test_cli_ingest.py`:**
+
+- `_FakeArchiver` bekommt
+
+  ```python
+  async def user_status(self) -> str:
+      """Pre-Flight-Probe (§0b) — der Fake antwortet wie ein gesundes Konto."""
+      return "available=3 processing=0 daily_captures=0/30000"
+  ```
+
+- `_ControllableWayback` bekommt dieselbe Methode. Sie wird heute nicht aufgerufen (der Test
+  fährt mit `no_preflight=True`), aber ein Double, dem die halbe Schnittstelle fehlt, ist eine
+  Falle für den nächsten, der den Schalter umlegt — genau die Falle, die gerade zugeschnappt ist.
+
+**Do-NOT:** den Pre-Flight **nicht** defensiv machen (kein `hasattr`, kein `getattr`-Fallback,
+kein `try/except AttributeError`), um das Double zu retten. Ein fehlendes Attribut am
+Stellvertreter ist ein Testfehler und soll laut scheitern.
+
+### 17.2 Files (NUR diese)
+
+**Ändern:** `tests/integration/test_cli_ingest.py`
+
+Kein Produktivcode. Alles aus §12, §14.7, §15.4 und §16 gilt unverändert weiter.
+
+### 17.3 Abschluss
+
+- `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.

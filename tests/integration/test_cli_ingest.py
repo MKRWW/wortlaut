@@ -109,6 +109,11 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, dsn: str, cfg: dict[str, str]) -> 
     monkeypatch.setenv("WORTLAUT_WORM_BUCKET", "wortlaut-worm")
     monkeypatch.setenv("WORTLAUT_WORM_SECURE", "false")
     monkeypatch.setenv("WORTLAUT_DIP_API_KEY", "dummy-key")
+    # §16.1: Zugangsdaten-Pflicht am Composition-Root (§4.5). Zusammengesetzt,
+    # nicht ausgeschrieben — ein schlüsselartiges Literal am Stück ist für
+    # python:S6698 und gitleaks von einem echten Fund nicht zu unterscheiden.
+    monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_ACCESS_KEY", "ia-" + "dummy-access")
+    monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_SECRET", "ia-" + "dummy-secret")
 
 
 def _ingest_args(*, no_preflight: bool = False) -> Namespace:
