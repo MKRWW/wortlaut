@@ -877,3 +877,68 @@ stumm ins Polling-Limit — mit `capture_timeout` als irreführendem Grund.
 ### 15.6 Abschluss
 
 - `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.
+
+---
+
+## 16. Dritte Review-Runde: zwei letzte Lücken
+
+§15 ist umgesetzt; von dreizehn Mutationen werden jetzt **zwölf** erkannt, darunter alle, die
+den Pre-Flight betreffen. Zwei Punkte bleiben — beide wieder aus dieser Spec, nicht aus der
+Umsetzung.
+
+### 16.1 Spec-Lücke: die Integrationstests kennen die neue Vorbedingung nicht
+
+`tests/integration/test_cli_ingest.py` fährt `_run(...)` echt gegen Postgres und MinIO und
+setzt die Umgebung über `_set_env`. Die Zugangsdaten-Pflicht aus §4.5 kippt zwei Tests auf
+Exit 2:
+
+```
+FAILED tests/integration/test_cli_ingest.py::test_end_to_end_single_source
+FAILED tests/integration/test_cli_ingest.py::test_archive_failed_retried_on_rerun
+  Konfiguration fehlgeschlagen: keine Internet-Archive-Zugangsdaten (…)
+```
+
+**Das Gate arbeitet korrekt — die Tests konfigurieren die Umgebung nur unvollständig.** Der
+Archiver ist in beiden Tests ohnehin durch einen Fake ersetzt (`patch("wortlaut.cli.WaybackArchiver", …)`),
+es geht also kein echter Call raus; es fehlt allein die Konfiguration.
+
+In `_set_env` neben die übrigen Variablen aufnehmen:
+
+```python
+monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_ACCESS_KEY", "ia-" + "dummy-access")
+monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_SECRET", "ia-" + "dummy-secret")
+```
+
+**Zusammengesetzt, nicht ausgeschrieben** — ein schlüsselartiges Literal am Stück ist für
+`python:S6698` und gitleaks von einem echten Fund nicht zu unterscheiden, und `sonar.tests=tests`
+scannt diese Datei mit.
+
+**Do-NOT:** das Gate **nicht** entschärfen, um die Tests grün zu bekommen — kein
+`--dry-run`, kein Überspringen, keine Sonderbehandlung für Testumgebungen im Produktivcode.
+Genau diese Tests belegen, dass die Vorbedingung im echten Ablauf greift.
+
+### 16.2 `invalid_response` deckt nur einen der beiden Zweige
+
+`test_kaputter_body_ist_invalid_response` trifft den Pfad „Body ist gar kein JSON"
+(`response.json()` wirft). `_json_or_error` hat aber **zwei** Zweige; der zweite prüft, dass das
+dekodierte Ergebnis ein Objekt ist. Ersetzt man dort das Werfen durch ein stilles `return {}`,
+bleibt der Testlauf grün. Ursache ist §15.2: dort stand nur der erste Fall.
+
+Den Test um den zweiten Fall erweitern — am saubersten als `pytest.mark.parametrize` über beide
+Körper:
+
+- `"kein json"` als roher Text (JSON-Dekodierung schlägt fehl), und
+- ein Body, der **gültiges JSON, aber kein Objekt** ist, z. B. die Liste `[1, 2, 3]`.
+
+Beide müssen `ArchiveError` mit `reason == "invalid_response"` und `transient is False` liefern.
+Im `pytest.raises`-Block steht nur der Aufruf unter Test (`python:S5778`).
+
+### 16.3 Files (NUR diese)
+
+**Ändern:** `tests/integration/test_cli_ingest.py` · `tests/unit/test_archiver_spn2.py`
+
+Kein Produktivcode. Alles aus §12, §14.7 und §15.4 gilt unverändert weiter.
+
+### 16.4 Abschluss
+
+- `git status --porcelain` ausgeben. **Sonst nichts.** Das Gate fährt der Reviewer.

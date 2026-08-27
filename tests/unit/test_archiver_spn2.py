@@ -80,6 +80,30 @@ def _capture_handler(
     return handler
 
 
+def _user_status_handler() -> Callable[[httpx.Request], httpx.Response]:
+    """Handler: ``GET /save/status/user`` → User-Status-Payload.
+
+    Jeder andere Pfad erhält ein leeres Objekt (200) — so versagt eine
+    Mutation (z.B. Aufruf der Save-URL statt der Status-URL) sauber über die
+    Assertions, nicht über eine Exception.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/save/status/user":
+            return httpx.Response(
+                200,
+                json={
+                    "processing": 0,
+                    "available": 3,
+                    "daily_captures": 0,
+                    "daily_captures_limit": 30000,
+                },
+            )
+        return httpx.Response(200, json={})
+
+    return handler
+
+
 def _status_requests(requests: list[httpx.Request]) -> list[httpx.Request]:
     return [r for r in requests if r.url.path.startswith("/save/status/")]
 
@@ -251,3 +275,93 @@ async def test_secret_nicht_im_log(caplog: pytest.LogCaptureFixture) -> None:
     assert _access_key() not in caplog.text
     assert _secret() not in caplog.text
     assert "LOW " not in caplog.text
+
+
+async def test_user_status_trifft_status_endpunkt_mit_auth() -> None:
+    """§15.1: ``user_status`` trifft ``GET /save/status/user`` — genau EIN
+    Request, ``Authorization`` beginnt mit ``LOW ``, das Ergebnis enthält die
+    Felder, und kein Request geht an ``/save`` (kein Capture wird abgesetzt)."""
+    requests: list[httpx.Request] = []
+    wayback = _archiver_with_transport(
+        _user_status_handler(), requests=requests, credentials=_credentials()
+    )
+
+    result = await wayback.user_status()
+
+    assert len(requests) == 1  # genau ein Request
+    request = requests[0]
+    assert request.method == "GET"
+    assert request.url.path == "/save/status/user"  # exakt — kein Substring
+    assert request.headers["Authorization"].startswith("LOW ")
+    assert "available=3" in result
+    assert "daily_captures=0/30000" in result
+    assert _post_requests(requests) == []  # kein Capture
+
+
+async def test_user_status_401_wirft_unauthorized() -> None:
+    """§15.1: HTTP 401 auf den User-Status-Call → ``unauthorized`` (permanent)."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "You need to be logged in."})
+
+    wayback = _archiver_with_transport(handler, requests=requests, credentials=_credentials())
+
+    with pytest.raises(ArchiveError) as excinfo:
+        await wayback.user_status()
+
+    err = excinfo.value
+    assert err.service == "wayback"
+    assert err.reason == "unauthorized"
+    assert err.status_code == 401
+    assert err.transient is False
+
+
+async def test_kaputter_body_ist_invalid_response() -> None:
+    """§15.2: nicht-dekodierbarer Body auf den POST → permanentes
+    ``invalid_response`` — kein stilles Weiterlaufen mit leerem Payload."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"kein json")
+
+    wayback = _archiver_with_transport(
+        handler, requests=requests, credentials=_credentials(), tuning=WaybackTuning(attempts=1)
+    )
+
+    with pytest.raises(ArchiveError) as excinfo:
+        await wayback.archive("https://beispiel.test/x")
+
+    err = excinfo.value
+    assert err.service == "wayback"
+    assert err.reason == "invalid_response"
+    assert err.transient is False
+
+
+async def test_401_beim_status_abruf_ist_unauthorized() -> None:
+    """§15.3: HTTP 401 auf dem STATUS-Abruf (nicht dem POST) → ``unauthorized``
+    — der Status-Gate-Check im Polling-Pfad fängt ungültig gewordene
+    Zugangsdaten, bevor stumm das Polling-Limit abläuft."""
+    requests: list[httpx.Request] = []
+    job_id = "spn2-abc"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/save":
+            return httpx.Response(200, json={"url": "https://beispiel.test/x", "job_id": job_id})
+        if request.url.path == f"/save/status/{job_id}":
+            return httpx.Response(401, json={"message": "You need to be logged in."})
+        return httpx.Response(404, json={"detail": "not found"})
+
+    wayback = _archiver_with_transport(
+        handler, requests=requests, credentials=_credentials(), tuning=WaybackTuning(attempts=1)
+    )
+
+    with pytest.raises(ArchiveError) as excinfo:
+        await wayback.archive("https://beispiel.test/x")
+
+    err = excinfo.value
+    assert err.service == "wayback"
+    assert err.reason == "unauthorized"
+    assert err.transient is False
+    # Der Fehler kommt VOR dem Polling-Limit: nach genau einem Status-Abruf.
+    assert len(_status_requests(requests)) == 1
