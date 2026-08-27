@@ -9,13 +9,21 @@
 # Die Reihenfolge der Inbetriebnahme steht in docs/deploy.md. Wichtigster Punkt
 # vorweg: `serve` migriert NICHT. Vor dem ersten Start muss der Bootstrap laufen.
 
+# Kein Autostart (`restart: "no"`) — Absicht, kein Versehen. Liegen die
+# Datenverzeichnisse auf einem verschluesselten Volume, das nach einem Reboot
+# von Hand entsperrt wird, wuerde ein Autostart Postgres und MinIO gegen ein
+# noch leeres Verzeichnis hochfahren: Sie legen dann klaglos einen zweiten,
+# leeren Datenbestand neben dem echten an. Der Stack wird deshalb bewusst erst
+# nach dem Entsperren gestartet. Wer unverschlusselt speichert, kann hier auf
+# `unless-stopped` gehen.
+
 name: wortlaut
 
 services:
   db:
     # pgvector ist Pflicht (Migration 0001 legt die Extension an).
     image: pgvector/pgvector:pg16
-    restart: unless-stopped
+    restart: "no"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -35,7 +43,7 @@ services:
     # ihn beim Bootstrap korrekt an. Ein von Hand erzeugter Bucket sieht identisch
     # aus und hat die WORM-Garantie still verloren.
     image: minio/minio:latest
-    restart: unless-stopped
+    restart: "no"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${WORTLAUT_WORM_ACCESS_KEY}
@@ -53,7 +61,7 @@ services:
     # `develop` und `latest` wandern bei jedem Push — ein Neustart wuerde dann
     # unbemerkt eine andere Version starten.
     image: ghcr.io/mkrww/wortlaut:${WORTLAUT_IMAGE_SHA}
-    restart: unless-stopped
+    restart: "no"
     command: ["python", "-m", "wortlaut", "serve"]
     environment:
       WORTLAUT_DB_DSN: ${WORTLAUT_DB_DSN}
@@ -81,7 +89,7 @@ services:
 
   tunnel:
     image: cloudflare/cloudflared:latest
-    restart: unless-stopped
+    restart: "no"
     command: ["tunnel", "--no-autoupdate", "run", "--token", "${TUNNEL_TOKEN}"]
     depends_on:
       - api
