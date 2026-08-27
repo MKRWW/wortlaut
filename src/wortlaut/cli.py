@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
 import sys
 from collections import Counter
 from collections.abc import Awaitable, Callable
@@ -17,10 +18,11 @@ from datetime import datetime
 import uvicorn
 from pydantic import ValidationError
 
-from wortlaut.archive.archiver import ArchiveTodayArchiver, WaybackArchiver
+from wortlaut.archive.archiver import ArchiveTodayArchiver, WaybackArchiver, WaybackTuning
 from wortlaut.archive.errors import ArchiveError
 from wortlaut.archive.preflight import probe_archive
 from wortlaut.archive.settings import ArchiveSettings
+from wortlaut.archive.spn2 import IaCredentials
 from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
 from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
@@ -36,6 +38,8 @@ from wortlaut.store.worm import MinioWormStore
 from wortlaut.timestamp.profiles import load_profile
 from wortlaut.timestamp.settings import TimestampSettings
 from wortlaut.timestamp.tsa import FallbackTimeStamper, Rfc3161Tsa
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,20 +80,24 @@ def main(argv: list[str] | None = None) -> int:
 async def _run(args: argparse.Namespace) -> int:
     """Composition-Root. Reihenfolge: Settings -> Engine -> Adapter -> Loop."""
     # 1) Settings aus ENV
-    try:
-        db_settings = DbSettings()
-        worm_settings = WormSettings()
-        dip_settings = DipSettings()
-        archive_settings = ArchiveSettings()
-    except Exception as e:
-        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+    loaded = _load_settings()
+    if loaded is None:
+        return 2
+    db_settings, worm_settings, dip_settings, archive_settings = loaded
+
+    # Zugangsdaten-Pflicht (Spec 0108 §4.5): am Composition-Root, VOR dem
+    # ersten Fetch — dort, wo die Konfiguration ohnehin gelesen wird.
+    # Save Page Now lehnt anonyme Aufrufe mit 401 ab; ohne Archivierung kein
+    # Insert. ``--dry-run`` archiviert nicht und bleibt deshalb erlaubt.
+    credentials = _ia_credentials(archive_settings)
+    if _credentials_missing(credentials, dry_run=args.dry_run):
         return 2
 
     engine = create_async_engine_from(db_settings)
     sessions = make_sessionmaker(engine)
     adapter = DipPlenarprotokollAdapter(dip_settings)
     worm = MinioWormStore(worm_settings)
-    wayback, atoday_inner, atoday = _build_archivers(archive_settings)
+    wayback, atoday_inner, atoday = _build_archivers(archive_settings, credentials)
     deps = PipelineDeps(adapter=adapter, wayback=wayback, archive_today=atoday, worm=worm)
 
     try:
@@ -286,6 +294,29 @@ def _config_error(e: Exception) -> str:
     return str(e)
 
 
+def _load_settings() -> tuple[DbSettings, WormSettings, DipSettings, ArchiveSettings] | None:
+    """Alle Settings aus der Umgebung; ``None`` ⇒ Meldung ist raus, Aufrufer gibt 2 zurück."""
+    try:
+        return DbSettings(), WormSettings(), DipSettings(), ArchiveSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return None
+
+
+def _credentials_missing(credentials: IaCredentials | None, *, dry_run: bool) -> bool:
+    """``True`` ⇒ Abbruch mit Exit 2; die Meldung ist dann bereits ausgegeben."""
+    if credentials is not None or dry_run:
+        return False
+    print(
+        "Konfiguration fehlgeschlagen: keine Internet-Archive-Zugangsdaten "
+        "(WORTLAUT_ARCHIVE_IA_ACCESS_KEY / WORTLAUT_ARCHIVE_IA_SECRET). "
+        "Save Page Now lehnt anonyme Aufrufe mit 401 ab; ohne Archivierung "
+        "kein Insert.",
+        file=sys.stderr,
+    )
+    return True
+
+
 async def _aclose_all(*closers: Callable[[], Awaitable[object]]) -> None:
     """Schliesst jede Ressource einzeln; ein Fehler darf die anderen nicht verschlucken."""
     for closer in closers:
@@ -296,17 +327,19 @@ async def _aclose_all(*closers: Callable[[], Awaitable[object]]) -> None:
 async def _preflight_ok(
     args: argparse.Namespace, settings: ArchiveSettings, wayback: WaybackArchiver
 ) -> bool:
-    """Pre-Flight-Probe (Spec 0077). ``False`` ⇒ der Lauf bricht mit Exit 3 ab.
+    """Pre-Flight-Probe (Spec 0077, überarbeitet in #108). ``False`` ⇒ Exit 3.
 
     Übersprungen bei ``--no-preflight``, ``--dry-run`` oder
     ``preflight_enabled=false`` (§4.5/§4.6) — dann wird **kein** Call abgesetzt.
+    Der Probe misst den User-Status (``GET /save/status/user``): Zugangsdaten
+    werden akzeptiert und der Dienst antwortet — ohne Capture-Kontingent.
     Nur ``ArchiveError`` wird gefangen; ein ``SsrfBlocked`` ist ein
     Security-Stopp und fliegt unverändert durch (Festlegung aus #73).
     """
     if args.no_preflight or args.dry_run or not settings.preflight_enabled:
         return True
     try:
-        await probe_archive(wayback, probe_url=settings.preflight_url)
+        summary = await probe_archive(wayback)
     except ArchiveError as e:
         print(
             f"Pre-Flight: Fremdarchiv nicht funktionsfaehig ({e}) "
@@ -314,11 +347,28 @@ async def _preflight_ok(
             file=sys.stderr,
         )
         return False
+    logger.info("Pre-Flight: Fremdarchiv bereit (%s)", summary)
     return True
+
+
+def _ia_credentials(settings: ArchiveSettings) -> IaCredentials | None:
+    """Baut die Internet-Archive-Zugangsdaten aus den Settings (Spec 0108 §4.5).
+
+    Beide ``SecretStr``-Felder gesetzt ⇒ ``IaCredentials`` (aus
+    ``get_secret_value()``); sonst ``None``. Der Einzelfall „nur einer
+    gesetzt" ist bereits bei den Settings als ``ValidationError`` abgefangen.
+    """
+    if settings.ia_access_key is None or settings.ia_secret is None:
+        return None
+    return IaCredentials(
+        access_key=settings.ia_access_key.get_secret_value(),
+        secret=settings.ia_secret.get_secret_value(),
+    )
 
 
 def _build_archivers(
     settings: ArchiveSettings,
+    credentials: IaCredentials | None,
 ) -> tuple[WaybackArchiver, ArchiveTodayArchiver, DisableAfterFailures]:
     """Baut den Archiv-Stack: gedrosselt, retry-fähig, optionaler Dienst abschaltbar.
 
@@ -326,9 +376,14 @@ def _build_archivers(
     httpx-Client und muss im Cleanup geschlossen werden.
     """
     wayback = WaybackArchiver(
+        credentials=credentials,
         limiter=RateLimiter(settings.wayback_min_interval_seconds),
-        attempts=settings.retry_attempts,
-        base_delay_seconds=settings.retry_base_delay_seconds,
+        tuning=WaybackTuning(
+            attempts=settings.retry_attempts,
+            base_delay_seconds=settings.retry_base_delay_seconds,
+            poll_interval_seconds=settings.spn2_poll_interval_seconds,
+            poll_timeout_seconds=settings.spn2_poll_timeout_seconds,
+        ),
     )
     atoday_inner = ArchiveTodayArchiver(
         limiter=RateLimiter(settings.archive_today_min_interval_seconds),

@@ -1,41 +1,52 @@
-"""Pre-Flight-Archiv-Health-Check vor einem Backfill (Spec 0077, #77).
+"""Pre-Flight-Archiv-Health-Check vor einem Backfill (#77, überarbeitet in #108).
 
-Ein einziger echter Archivierungs-Versuch gegen eine neutrale URL, abgesetzt
-durch den **bereits injizierten** Archiver — kein eigener HTTP-Call, kein
-eigenes Status-Gate, keine zweite Wahrheit (§0a, §4.1).
+Ein einziger echter Call, abgesetzt durch den **bereits injizierten** Archiver
+— kein eigener HTTP-Pfad, kein eigenes Status-Gate, keine zweite Wahrheit.
 
-Importiert nur stdlib + ``wortlaut.archive`` (R-ARCH-02) — der
-Contract ``archive-ist-unabhaengig`` bleibt damit erfüllt.
+Importiert nur stdlib + ``wortlaut.archive`` (R-ARCH-02) — der Contract
+``archive-ist-unabhaengig`` bleibt damit erfüllt.
 """
 
 from __future__ import annotations
 
-from wortlaut.archive.archiver import Archiver
-
-PROBE_URL = "https://example.com/"  # IANA-reservierte Beispiel-Domain, keine echte Quelle
+from typing import Protocol
 
 
-async def probe_archive(wayback: Archiver, *, probe_url: str = PROBE_URL) -> str:
-    """Ein einziger Archivierungs-Versuch gegen eine neutrale URL.
+class ArchiveHealth(Protocol):
+    """Nur das, was der Pre-Flight braucht: ein User-Status-Call ohne Capture."""
 
-    Liefert die Snapshot-URL, wenn der Dienst funktionsfähig ist. Wirft den
-    ``ArchiveError`` des Archivers unverändert weiter, wenn nicht — Grund und
-    Statuscode bleiben damit bis in die Abbruchmeldung erhalten.
+    async def user_status(self) -> str: ...
 
-    **Warum genau dieser Call und kein anderer:** Der Probe ist bewusst *kein*
-    eigener HTTP-Pfad, sondern ein ganz normaler ``wayback.archive(<neutrale
-    URL>)``-Aufruf über den injizierten Archiver. Damit erbt er Status-Gate,
-    Snapshot-Validierung, Drosselung und Retry aus #73 — und trifft exakt den
-    Endpunkt ``/save/``, von dem der laufende Backfill abhängt.
 
-    Die naheliegenden Alternativen sind beide falsch (§0a, gemessen):
+async def probe_archive(wayback: ArchiveHealth) -> str:
+    """Ein einziger echter Call, der die zwei systematischen Startfehler belegt.
+
+    Die Regel aus #77 gilt unverändert: Ein Health-Check, der etwas anderes
+    misst als das, was gleich benutzt wird, ist kein Health-Check, sondern
+    eine zweite Fehlerquelle. Was sich seit SPN2 (#108 §0b) geändert hat, ist
+    *was* gemessen wird:
+
+    Die frühere Capture-Probe hatte einen URL-abhängigen Falsch-Rot-Modus,
+    der nichts mit dem Dienst zu tun hatte, sondern mit der Probe-URL:
+    das Tageslimit (5 Captures/URL/Tag, global über alle Nutzer) der am
+    meisten genutzten Test-URL der Welt ist dauerhaft ausgeschöpft. Eine
+    Probe, die rot wird, obwohl der Dienst gesund ist, ist wertlos — sie
+    hätte den Backfill dauerhaft blockiert.
+
+    ``GET /save/status/user`` belegt in einem einzigen Call genau das, was
+    am Laufbeginn systematisch kaputt sein kann: die Zugangsdaten werden
+    akzeptiert und der Dienst antwortet. Er verbraucht kein
+    Capture-Kontingent und antwortet sofort. Er belegt *nicht*, dass ein
+    konkreter Capture gelingt — der bewusst gezahlte Preis: Ein
+    fehlgeschlagener Einzel-Capture ist ohnehin kein Lauf-Abbruch, sondern
+    ein ``archive_failed``-Outcome pro Quelle; dafür ist der Circuit-Breaker
+    aus #73 zuständig, nicht der Pre-Flight.
+
+    Die beiden alten Gegenbeispiele bleiben gültig:
       * ``GET web.archive.org/`` (Site-Root) lieferte 200, während ``/save/``
         tot war — *falsch grün*, hätte den Ausfall durchgewinkt.
       * ``GET archive.org/wayback/available`` liefert dauerhaft 502 —
         *falsch rot*, würde jeden Ingest blockieren, obwohl ``/save/``
         funktioniert.
-
-    Ein Health-Check, der etwas anderes misst als das, was gleich benutzt wird,
-    ist kein Health-Check, sondern eine zweite Fehlerquelle.
     """
-    return await wayback.archive(probe_url)
+    return await wayback.user_status()

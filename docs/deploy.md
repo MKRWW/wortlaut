@@ -112,6 +112,15 @@ nebenbei macht.
 
 ## Erfassungs-Läufe
 
+**Vorbedingung: Internet-Archive-Zugangsdaten.** Ohne
+`WORTLAUT_ARCHIVE_IA_ACCESS_KEY` und `WORTLAUT_ARCHIVE_IA_SECRET` in der `.env` bricht
+jeder Ingest-Lauf sofort mit **Exit 2** ab, bevor die erste Quelle geholt wird. Das ist
+Absicht: Save Page Now lehnt anonyme Aufrufe mit 401 ab, und ohne Fremdarchivierung
+entsteht kein Insert — ein Lauf ohne Schlüssel würde nur Zeit verbrennen und eine
+irreführende Fehlerliste erzeugen. Die Schlüssel entstehen unter
+`https://archive.org/account/s3.php`; ein Konto genügt, sie sind kostenlos. Nur
+`--dry-run` kommt ohne aus.
+
 Ingest und Zeitstempel laufen als einmalige Kommandos, nicht als Dienst:
 
 ```
@@ -124,8 +133,15 @@ docker compose --env-file /srv/wortlaut/.env -f compose.yml \
 
 **Immer erst mit kleinem `--limit`.** Erst wenn ein solcher Lauf `archive_failed=0`
 meldet, lohnt der volle Durchgang. Der Pre-Flight-Check prüft vorab, ob die
-Fremdarchive überhaupt antworten — er existiert, weil ein Vollbackfill schon einmal
-an einem Ausfall des Internet Archive gescheitert ist und dabei 157 Quellen verlor.
+Zugangsdaten akzeptiert werden und der Archivdienst antwortet — er existiert, weil ein
+Vollbackfill schon einmal an einem Ausfall des Internet Archive gescheitert ist und
+dabei 157 Quellen verlor. Er setzt bewusst **keinen** Probe-Capture ab: Ein einzelner
+Capture pro Lauf würde nur ein Tageskontingent verbrauchen und wäre, sobald die
+Probe-URL ihr Limit erreicht, dauerhaft rot — ohne dass mit dem Dienst etwas wäre.
+
+Rechnen Sie mit **rund einer halben Minute pro Quelle**. Save Page Now nimmt einen
+Auftrag nur entgegen und meldet den Abschluss später; der Lauf wartet darauf, weil die
+Snapshot-URL erst dann feststeht.
 
 ## Logs
 

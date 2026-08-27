@@ -1,4 +1,5 @@
-"""CLI Unit-Tests AC1-AC8 (+ main/__main__ Coverage) — keine Live-Netz-/DB-Calls."""
+"""CLI Unit-Tests AC1-AC8 (+ main/__main__ Coverage, #73 Breaker,
+#77/#108 Pre-Flight) — keine Live-Netz-/DB-Calls."""
 
 from __future__ import annotations
 
@@ -11,15 +12,18 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 
 from wortlaut.archive.errors import ArchiveError
-from wortlaut.archive.preflight import PROBE_URL
+from wortlaut.archive.settings import ArchiveSettings
 from wortlaut.cli import _run, main
 from wortlaut.ingest.adapter import SourceRef
 from wortlaut.ingest.dip import DipFetchError
 from wortlaut.pipeline.ingest import IngestOutcome
 
 # ── Fakes ────────────────────────────────────────────────────────────────
+
+USER_STATUS_SUMMARY = "available=3 processing=0 daily_captures=0/30000"
 
 
 class FakeAdapter:
@@ -51,9 +55,18 @@ class FakeAdapter:
 class FakeArchiver:
     def __init__(self) -> None:
         self.aclose_called = False
+        self.user_status_calls = 0
         self.archive_calls: list[str] = []
         self.archive_error: ArchiveError | None = None
+        self.user_status_error: ArchiveError | None = None
         self.archive_result = "https://web.archive.org/snapshot/xyz"
+        self.user_status_result = USER_STATUS_SUMMARY
+
+    async def user_status(self) -> str:
+        self.user_status_calls += 1
+        if self.user_status_error is not None:
+            raise self.user_status_error
+        return self.user_status_result
 
     async def archive(self, origin_url: str) -> str:
         self.archive_calls.append(origin_url)
@@ -106,9 +119,55 @@ def _ns(**kw: object) -> Namespace:
     return Namespace(**base)
 
 
+def _archive_settings_ns(
+    *,
+    preflight_enabled: bool = True,
+    ia_access_key: str | None = None,
+    ia_secret: str | None = None,
+) -> SimpleNamespace:
+    """ArchiveSettings-Ersatz; die Zugangsdaten sind SecretStr-Objekte (wie in
+    der echten Klasse), damit ``_ia_credentials`` unverändert getestet wird.
+    Zusammengesetzte Testwerte (S6698: keine ausschreibenden
+    Zugangsdaten-artigen Literale)."""
+    return SimpleNamespace(
+        wayback_min_interval_seconds=10.0,
+        archive_today_min_interval_seconds=15.0,
+        retry_attempts=3,
+        retry_base_delay_seconds=2.0,
+        optional_failure_limit=3,
+        consecutive_failure_limit=5,
+        preflight_enabled=preflight_enabled,
+        ia_access_key=SecretStr(ia_access_key) if ia_access_key is not None else None,
+        ia_secret=SecretStr(ia_secret) if ia_secret is not None else None,
+        spn2_poll_interval_seconds=3.0,
+        spn2_poll_timeout_seconds=180.0,
+    )
+
+
+def _credentials_env(
+    monkeypatch: pytest.MonkeyPatch, *, access: str | None, secret: str | None
+) -> None:
+    """Setzt/löscht die IA-Zugangsdaten-ENV (zusammengesetzt, S6698)."""
+    monkeypatch.delenv("WORTLAUT_ARCHIVE_IA_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("WORTLAUT_ARCHIVE_IA_SECRET", raising=False)
+    if access is not None:
+        monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_ACCESS_KEY", access)
+    if secret is not None:
+        monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_SECRET", secret)
+
+
 @pytest.fixture
-def wired() -> Iterator[SimpleNamespace]:
-    """Patcht alle Composition-Root-Deps von wortlaut.cli; gibt Handles zurueck."""
+def wired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[SimpleNamespace]:
+    """Patcht alle Composition-Root-Deps von wortlaut.cli; gibt Handles zurueck.
+
+    ENV-Defaults: beide IA-Zugangsdaten gesetzt (der normale, produktive Fall);
+    Tests, die die Pflicht pruefen, patchen ArchiveSettings selbst (keine
+    Zugangsdaten im Namespace). Der gepatchte ArchiveSettings-Ersatz traegt
+    die Zugangsdaten als SecretStr im Objekt (nicht nur in der ENV).
+    """
+    _credentials_env(monkeypatch, access="k-abc-1", secret="s-xyz-2")
     adapter = FakeAdapter()
     wayback = FakeArchiver()
     atoday = FakeArchiver()
@@ -122,16 +181,7 @@ def wired() -> Iterator[SimpleNamespace]:
         patch("wortlaut.cli.DipSettings", return_value=MagicMock()),
         patch(
             "wortlaut.cli.ArchiveSettings",
-            return_value=SimpleNamespace(
-                wayback_min_interval_seconds=5.0,
-                archive_today_min_interval_seconds=15.0,
-                retry_attempts=3,
-                retry_base_delay_seconds=2.0,
-                optional_failure_limit=3,
-                consecutive_failure_limit=5,
-                preflight_enabled=True,
-                preflight_url=PROBE_URL,
-            ),
+            return_value=_archive_settings_ns(ia_access_key="k-abc-1", ia_secret="s-xyz-2"),
         ),
         patch("wortlaut.cli.create_async_engine_from", return_value=engine),
         patch("wortlaut.cli.make_sessionmaker", return_value=FakeSessionmaker()),
@@ -398,17 +448,17 @@ async def test_summary_reports_dash_when_no_failures(
     assert "reasons=-" in out
 
 
-# ── #77: Pre-Flight-Archiv-Health-Check (Spec 0077) ──────────────────────
+# ── #77/#108: Pre-Flight-Archiv-Health-Check (User-Status-Probe) ─────────
 
 
 async def test_preflight_failure_aborts_before_discover(
     wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """AC1: Wayback-Probe wirft ArchiveError -> Exit 3, discover 0×, fetch 0×,
-    Ausgabe nennt 'Pre-Flight' samt Grund und Statuscode — VOR dem ersten Fetch."""
+    """AC1: User-Status-Probe wirft ArchiveError (401) -> Exit 3, discover 0×,
+    fetch 0×, Ausgabe nennt 'Pre-Flight' samt Grund — VOR dem ersten Fetch."""
     wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
-    wired.wayback.archive_error = ArchiveError(
-        "wayback", "http_status", status_code=503, transient=True
+    wired.wayback.user_status_error = ArchiveError(
+        "wayback", "unauthorized", status_code=401, transient=False
     )
     rc = await _run(_ns())
     cap = capfd.readouterr()
@@ -417,21 +467,22 @@ async def test_preflight_failure_aborts_before_discover(
     assert wired.adapter.fetch_calls == 0  # kein Ziel-PDF
     assert wired.ingest.call_count == 0
     assert "Pre-Flight" in cap.err
-    assert "503" in cap.err  # Statuscode bleibt in der Meldung erhalten
+    assert "401" in cap.err  # Statuscode bleibt in der Meldung erhalten
+    assert wired.wayback.user_status_calls == 1  # genau ein Probe-Call
 
 
 async def test_preflight_healthy_runs_normally(
     wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """AC2: Probe liefert Snapshot-URL -> Ingest läuft normal weiter (Exit 0,
-    Summary wie bisher). Der Archiver wird für den Probe aufgerufen (1×); die
-    je-Quelle-Aufrufe sind Aufgabe der Pipeline (hier gemockt)."""
+    """AC2: Probe liefert die User-Status-Zusammenfassung -> Ingest läuft
+    normal weiter (Exit 0, Summary wie bisher). Der User-Status-Call geht
+    genau einmal raus; es wird KEIN Capture abgesetzt."""
     wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
     rc = await _run(_ns())
     cap = capfd.readouterr()
     assert rc == 0
-    # Probe ging raus (1×, neutrale URL) — der Lauf wurde NICHT gestoppt.
-    assert wired.wayback.archive_calls == [PROBE_URL]
+    assert wired.wayback.user_status_calls == 1  # die Probe ging raus
+    assert wired.wayback.archive_calls == []  # KEIN Capture durch die Probe
     assert wired.adapter.discover_calls == 1
     assert wired.ingest.call_count == 2  # beide Refs normal verarbeitet
     assert "discovered=2" in cap.out  # Summary wie bisher
@@ -444,7 +495,7 @@ async def test_no_preflight_flag_skips_probe(
     wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
     rc = await _run(_ns(no_preflight=True))
     assert rc == 0
-    assert wired.wayback.archive_calls == []  # kein Probe-Call
+    assert wired.wayback.user_status_calls == 0  # kein Probe-Call
     assert wired.ingest.call_count == 2
 
 
@@ -455,20 +506,13 @@ async def test_preflight_disabled_via_settings_skips_probe(
     wired.adapter.refs = [_ref("http://a/p1.pdf")]
     with patch(
         "wortlaut.cli.ArchiveSettings",
-        return_value=SimpleNamespace(
-            wayback_min_interval_seconds=5.0,
-            archive_today_min_interval_seconds=15.0,
-            retry_attempts=3,
-            retry_base_delay_seconds=2.0,
-            optional_failure_limit=3,
-            consecutive_failure_limit=5,
-            preflight_enabled=False,
-            preflight_url=PROBE_URL,
+        return_value=_archive_settings_ns(
+            preflight_enabled=False, ia_access_key="k-abc-1", ia_secret="s-xyz-2"
         ),
     ):
         rc = await _run(_ns())
     assert rc == 0
-    assert wired.wayback.archive_calls == []  # kein Probe-Call
+    assert wired.wayback.user_status_calls == 0  # kein Probe-Call
     assert wired.ingest.call_count == 1
 
 
@@ -480,5 +524,50 @@ async def test_dry_run_skips_probe(
     rc = await _run(_ns(dry_run=True))
     cap = capfd.readouterr()
     assert rc == 0
-    assert wired.wayback.archive_calls == []  # kein Probe-Call
+    assert wired.wayback.user_status_calls == 0  # kein Probe-Call
     assert "dry_run=True" in cap.out  # Dry-Run-Zeile wörtlich unverändert
+
+
+# ── #108: Zugangsdaten-Pflicht am Composition-Root (AC16/AC17) ───────────
+
+
+async def test_ohne_zugangsdaten_exit_2(
+    wired: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC16: keine IA-Zugangsdaten in der ENV -> rc 2, stderr nennt beide
+    ENV-Namen, und es wurde KEIN DIP-Call und KEIN Archiv-Call abgesetzt
+    (Abbruch VOR Engine, Bootstrap, Pre-Flight und discover)."""
+    _credentials_env(monkeypatch, access=None, secret=None)
+    # Der Fixture-Patch liefert Credential-Settings; hier bewusst die ECHTE
+    # Klasse (liest die geleerte ENV), damit der Pflicht-Abbruch greift.
+    with patch("wortlaut.cli.ArchiveSettings", return_value=ArchiveSettings()):
+        wired.adapter.refs = [_ref("http://a/p1.pdf")]
+        rc = await _run(_ns())
+    cap = capfd.readouterr()
+    assert rc == 2
+    assert "WORTLAUT_ARCHIVE_IA_ACCESS_KEY" in cap.err
+    assert "WORTLAUT_ARCHIVE_IA_SECRET" in cap.err
+    assert wired.adapter.discover_calls == 0  # kein DIP-Call
+    assert wired.adapter.fetch_calls == 0  # kein Ziel-Fetch
+    assert wired.wayback.user_status_calls == 0  # kein Archiv-Call
+    assert wired.wayback.archive_calls == []
+    assert wired.ingest.call_count == 0
+    # Der Abbruch liegt VOR der Engine-Erzeugung — das try/finally (und damit
+    # dispose) wird in diesem Pfad nicht betreten.
+    assert wired.engine.dispose.await_count == 0
+
+
+async def test_dry_run_ohne_zugangsdaten_ok(
+    wired: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC17: keine IA-Zugangsdaten, ABER --dry-run -> rc 0 (Dry-Run
+    archiviert nicht und braucht keine Zugangsdaten)."""
+    _credentials_env(monkeypatch, access=None, secret=None)
+    with patch("wortlaut.cli.ArchiveSettings", return_value=ArchiveSettings()):
+        wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
+        rc = await _run(_ns(dry_run=True))
+    cap = capfd.readouterr()
+    assert rc == 0
+    assert "dry_run=True" in cap.out
+    assert wired.wayback.user_status_calls == 0  # Dry-Run überspringt die Probe
+    assert wired.ingest.call_count == 0

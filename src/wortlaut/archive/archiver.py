@@ -1,26 +1,43 @@
-"""Fremdarchiv-Client — Wayback Machine + archive.today mit Snapshot-Validierung.
+"""Fremdarchiv-Client — Wayback (SPN2-API) + archive.today mit Snapshot-Validierung.
 
 Importiert nur wortlaut.archive, httpx, stdlib (R-ARCH-02).
 
-Spec 0073: Eine Snapshot-URL wird NUR aus einer Erfolgsantwort (2xx/3xx)
-akzeptiert — der Status wird vor den Snapshot-Headers geprüft (Beweis-Anker,
-R-CORE-02). Transiente Fehler (429/408/5xx, Timeout, Transport) werden
-gedrosselt und wiederholt; permanente Fehler werfen sofort.
+Wayback spricht die SPN2-API (Spec 0108): authentifizierter ``POST /save``
+liefert eine Auftragsnummer, ``GET /save/status/<job_id>`` wird gepollt, die
+Snapshot-URL kommt aus ``timestamp`` + ``original_url`` der Erfolgsantwort.
+Die Signatur ``archive(origin_url) -> str`` bleibt unverändert (Spec 0108 §0a).
+Fehler kommen auch mit HTTP 200 (``status: error``) — die Auswertung läuft an
+beiden Stellen (§0a (2)). Transiente Fehler (429/408/5xx, Timeout, Transport,
+status_ext-Allowlist) werden gedrosselt und wiederholt; permanente Fehler
+werfen sofort.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
 from wortlaut.archive.errors import ArchiveError
 from wortlaut.archive.pinned import pinned_client
 from wortlaut.archive.retry import with_retry
+from wortlaut.archive.spn2 import (
+    SPN2_SAVE_URL,
+    SPN2_STATUS_URL,
+    SPN2_USER_STATUS_URL,
+    CaptureStatus,
+    IaCredentials,
+    capture_status_from_payload,
+    job_id_from_payload,
+    snapshot_url,
+    user_status_summary,
+)
 from wortlaut.archive.ssrf import SsrfBlocked, assert_url_allowed
 from wortlaut.archive.throttle import RateLimiter
 
@@ -28,7 +45,6 @@ logger = logging.getLogger(__name__)
 
 # ── Konstanten ──────────────────────────────────────────────────────────
 
-WAYBACK_SAVE_URL = "https://web.archive.org/save/"
 ARCHIVE_TODAY_SUBMIT_URL = "https://archive.ph/submit/"
 WAYBACK_HOST = "web.archive.org"
 ARCHIVE_TODAY_HOST = "archive.ph"
@@ -46,13 +62,44 @@ class ArchiveResult:
     failures: dict[str, ArchiveError]  # {'wayback': ..., 'archive_today': ...} bei Fehlern
 
 
+@dataclass(frozen=True)
+class WaybackTuning:
+    """Stellschrauben für Retry und Polling als EIN Bündel (R-ARCH-04)."""
+
+    attempts: int = 3
+    base_delay_seconds: float = 2.0
+    poll_interval_seconds: float = 3.0
+    poll_timeout_seconds: float = 180.0
+
+
 class Archiver(Protocol):
     """Prototyp-Schnittstelle für Fremdarchiv-Implementierungen."""
 
     async def archive(self, origin_url: str) -> str: ...
 
 
-# ── Status-Gate (Spec 0073 §4.1) ────────────────────────────────────────
+# ── Status-Gate (Spec 0073 §4.1, aufgeteilt in Spec 0108 §4.2) ──────────
+
+
+def _http_error_or_none(response: httpx.Response, *, service: str) -> ArchiveError | None:
+    """Reine HTTP-Statusbewertung — EINE Wahrheit für beide Dienste.
+
+    Tabelle:
+      401                              → ArchiveError('unauthorized', permanent)
+      429 · 408 · 5xx                  → ArchiveError('http_status', transient)
+      sonstige 4xx                     → ArchiveError('http_status', permanent)
+      alles sonst (2xx/3xx)            → None
+    401 hat einen eigenen Grund, damit die Meldung den Betreiber direkt zur
+    Ursache führt (SPN2 lehnt anonyme/ungültige Zugangsdaten mit 401 ab).
+    """
+    status = response.status_code
+    if status == 401:
+        return ArchiveError(service, "unauthorized", status_code=401, transient=False)
+    if status == 429 or status == 408 or 500 <= status <= 599:
+        return ArchiveError(service, "http_status", status_code=status, transient=True)
+    if not 200 <= status <= 399:
+        return ArchiveError(service, "http_status", status_code=status, transient=False)
+    return None
 
 
 def _snapshot_or_error(
@@ -63,21 +110,19 @@ def _snapshot_or_error(
 ) -> str | ArchiveError:
     """Status-Gate ZUERST, danach dienstspezifische Snapshot-Extraktion.
 
-    Tabelle (identisch für beide Dienste):
+    Die Statusbewertung liegt in ``_http_error_or_none`` (eine einzige
+    Wahrheit darüber, welcher Statuscode transient ist, §4.2). Hier hängt die
+    dienstspezifische Extraktion daran:
+
       2xx/3xx mit verwertbarem Header   → Snapshot-URL (schema-/host-validiert)
       2xx/3xx ohne verwertbaren Header  → ArchiveError('no_snapshot_url', permanent)
-      429 · 408 · 5xx                   → ArchiveError('http_status', transient)
-      sonstige 4xx                      → ArchiveError('http_status', permanent)
+      401 / 429 · 408 · 5xx / sonstige  → wie ``_http_error_or_none``
     Ein ungültiger Snapshot-URL wird vom Extractor als
     ArchiveError('invalid_snapshot_url') gemeldet und hier durchgereicht.
     """
-    status = response.status_code
-    if status == 429 or status == 408 or 500 <= status <= 599:
-        return ArchiveError(service, "http_status", status_code=status, transient=True)
-    if 400 <= status <= 499:
-        return ArchiveError(service, "http_status", status_code=status, transient=False)
-    if not 200 <= status <= 399:
-        return ArchiveError(service, "http_status", status_code=status, transient=False)
+    error = _http_error_or_none(response, service=service)
+    if error is not None:
+        return error
 
     try:
         snapshot_url = extract(response)
@@ -89,38 +134,6 @@ def _snapshot_or_error(
 
 
 # ── Snapshot-Extraktion (dienstspezifische Header-Quelle) ───────────────
-
-
-def _snapshot_from_wayback(response: httpx.Response) -> str | None:
-    """Extrahiert die Snapshot-URL: Content-Location (relativ → gegen
-    ``https://web.archive.org`` auflösen), sonst Location bei Redirect.
-
-    None, wenn die Antwort keinen verwertbaren Header trägt; gültige URLs
-    werden gegen den Wayback-Host validiert (ArchiveError bei Fremd-Host/Scheme).
-    """
-    snapshot_url: str | None = None
-
-    # Content-Location Header (relativ → mit Basis prefixen)
-    content_location = response.headers.get("content-location", "")
-    if content_location:
-        if content_location.startswith("http"):
-            snapshot_url = content_location
-        else:
-            snapshot_url = urljoin(f"https://{WAYBACK_HOST}", content_location)
-
-    # Fallback: Redirect → Location Header
-    if not snapshot_url and response.is_redirect:
-        location = response.headers.get("location", "")
-        if location:
-            if location.startswith("http"):
-                snapshot_url = location
-            else:
-                snapshot_url = urljoin(f"https://{WAYBACK_HOST}", location)
-
-    if snapshot_url is None:
-        return None
-    _validate_snapshot_url(snapshot_url, service="wayback", host=WAYBACK_HOST)
-    return snapshot_url
 
 
 def _snapshot_from_archive_today(response: httpx.Response) -> str | None:
@@ -172,22 +185,34 @@ def _validate_snapshot_url(snapshot_url: str, *, service: str, host: str) -> Non
         raise ArchiveError(service, "invalid_snapshot_url")
 
 
-# ── Wayback ─────────────────────────────────────────────────────────────
+# ── Wayback (SPN2) ──────────────────────────────────────────────────────
 
 
 class WaybackArchiver:
-    """Wayback Machine 'Save Page Now' — Status-Gate, Drosselung, Retry (Spec 0073)."""
+    """Wayback Machine 'Save Page Now' — SPN2-API (Spec 0108).
+
+    Asynchroner Fluss (gemessen, §0a): ``POST /save`` liefert eine
+    Auftragsnummer, ``GET /save/status/<job_id>`` wird gepollt, bis
+    ``status: success``; die Snapshot-URL wird aus ``timestamp`` und
+    ``original_url`` der Erfolgsantwort gebaut und host-validiert. Ein
+    frischer Snapshot ist bis zum CDX-Index-Nachziehen nicht exakt
+    auflösbar — deshalb keine Auflösung als Gate im Ingest-Pfad (§0a (3)).
+    Drosselung und Retry wie #73; die Pflicht auf Zugangsdaten liegt am
+    Composition-Root (§4.5), nicht hier.
+    """
 
     def __init__(
         self,
         *,
+        credentials: IaCredentials | None = None,
         limiter: RateLimiter | None = None,
-        attempts: int = 3,
-        base_delay_seconds: float = 2.0,
+        tuning: WaybackTuning | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        self._credentials = credentials
         self._limiter = limiter
-        self._attempts = attempts
-        self._base_delay_seconds = base_delay_seconds
+        self._tuning = tuning if tuning is not None else WaybackTuning()
+        self._sleep = sleep
         self._client: httpx.AsyncClient | None = None
 
     def _client_or_create(self) -> httpx.AsyncClient:
@@ -195,36 +220,141 @@ class WaybackArchiver:
             self._client = pinned_client(WAYBACK_HOST)
         return self._client
 
+    def _headers(self) -> dict[str, str]:
+        """Accept-Header plus Authorization NUR mit gesetzten Zugangsdaten.
+
+        Der Header wird nie geloggt (R-SEC-01, AC13) — auch nicht im
+        Fehlerpfad.
+        """
+        headers = {"Accept": "application/json"}
+        if self._credentials is not None:
+            headers["Authorization"] = self._credentials.authorization_header()
+        return headers
+
+    def _json_or_error(self, response: httpx.Response) -> Mapping[str, object]:
+        """Dekodiert die JSON-Antwort; alles andere ist ein permanenter
+        ``invalid_response``-Fehler.
+
+        Den Antworttext bewusst NICHT ins Log schreiben — er ist Fremdinhalt
+        (R-SEC-07).
+        """
+        try:
+            payload: object = response.json()
+        except Exception as exc:
+            raise ArchiveError("wayback", "invalid_response") from exc
+        if not isinstance(payload, dict):
+            raise ArchiveError("wayback", "invalid_response")
+        return payload
+
     async def _attempt(self, origin_url: str) -> str:
-        """Ein Versuch: optional drosseln, HTTP-Call, Status-Gate auf die Antwort."""
+        """Ein Versuch: drosseln, Capture-Request, Status-Polling, Snapshot-URL."""
         if self._limiter is not None:
             await self._limiter.acquire()
-        save_url = f"{WAYBACK_SAVE_URL}{origin_url}"
         # SsrfBlocked beim Client-Aufbau betrifft UNSEREN konstanten Archiv-Host
         # (z.B. DNS-Aussetzer) — Infrastruktur, kein Angriff: retrybar statt Lauf-Abbruch.
         try:
             client = self._client_or_create()
         except SsrfBlocked as exc:
             raise ArchiveError("wayback", "transport", transient=True) from exc
+
+        # 1) Capture-Request — asynchron: die Antwort trägt nur eine Job-ID.
         try:
-            response = await client.get(save_url)
+            response = await client.post(
+                SPN2_SAVE_URL,
+                data={"url": origin_url},
+                headers=self._headers(),
+            )
         except httpx.TimeoutException as exc:
             raise ArchiveError("wayback", "timeout", transient=True) from exc
         except httpx.TransportError as exc:
             raise ArchiveError("wayback", "transport", transient=True) from exc
 
-        result = _snapshot_or_error(response, service="wayback", extract=_snapshot_from_wayback)
-        if isinstance(result, ArchiveError):
-            raise result
-        return result
+        error = _http_error_or_none(response, service="wayback")
+        if error is not None:
+            raise error
+        payload = self._json_or_error(response)
+        job_id = job_id_from_payload(payload)
+
+        # 2) Polling, bis success oder das Versuchslimit (§4.4: Versuche, nicht
+        #    Sekunden — mit der injizierten Sleep deterministisch testbar).
+        max_polls = max(
+            1,
+            int(self._tuning.poll_timeout_seconds // self._tuning.poll_interval_seconds),
+        )
+        status = await self._poll_until_success(client, job_id, max_polls)
+
+        # 3) Snapshot-URL aus der Erfolgsantwort; 14-stelliger Stempel,
+        #    dann Host-Validierung. Kein Lösungs-Check (§0a (3)).
+        timestamp: object = status.timestamp
+        original_url: object = status.original_url
+        if not isinstance(timestamp, str) or not isinstance(original_url, str):
+            raise ArchiveError("wayback", "invalid_snapshot_url")
+        url = snapshot_url(timestamp, original_url)
+        _validate_snapshot_url(url, service="wayback", host=WAYBACK_HOST)
+        return url
+
+    async def _poll_until_success(
+        self, client: httpx.AsyncClient, job_id: str, max_polls: int
+    ) -> CaptureStatus:
+        """Pollt ``GET /save/status/<job_id>`` bis ``success``; danach Timeout.
+
+        Fehler werden auch mit HTTP 200 erkannt (``status: error``, §0a (2)) —
+        ``capture_status_from_payload`` entscheidet über Transienz via der
+        status_ext-Allowlist. Ein ``capture_timeout`` ist permanent: SPN2
+        begrenzt die Capture-Dauer selbst auf 2 Minuten; wer nach dem
+        Timeout-Limit nicht fertig ist, wird es beim zweiten Anlauf auch
+        nicht (§4.4).
+        """
+        for _poll in range(max_polls):
+            await self._sleep(self._tuning.poll_interval_seconds)
+            try:
+                response = await client.get(f"{SPN2_STATUS_URL}{job_id}", headers=self._headers())
+            except httpx.TimeoutException as exc:
+                raise ArchiveError("wayback", "timeout", transient=True) from exc
+            except httpx.TransportError as exc:
+                raise ArchiveError("wayback", "transport", transient=True) from exc
+
+            error = _http_error_or_none(response, service="wayback")
+            if error is not None:
+                raise error
+            status = capture_status_from_payload(self._json_or_error(response))
+            if status.state == "success":
+                return status
+        raise ArchiveError("wayback", "capture_timeout", transient=False)
 
     async def archive(self, origin_url: str) -> str:
-        """Löst ``GET /save/<origin_url>`` ab; Snapshot NUR aus Erfolgsantwort (§4.1)."""
+        """SPN2-Capture für ``origin_url``; Snapshot NUR aus Erfolgsantwort (§4.1)."""
         return await with_retry(
             lambda: self._attempt(origin_url),
-            attempts=self._attempts,
-            base_delay_seconds=self._base_delay_seconds,
+            attempts=self._tuning.attempts,
+            base_delay_seconds=self._tuning.base_delay_seconds,
         )
+
+    async def user_status(self) -> str:
+        """Pre-Flight-Call (Spec 0108 §0b): ``GET /save/status/user``.
+
+        Belegt in einem Call, dass die Zugangsdaten akzeptiert werden und der
+        Dienst antwortet — ohne Capture-Kontingent, ohne Wartezeit. **Kein**
+        Retry, **keine** Bewertung von ``available``/``daily_captures``
+        (Sekundenzustand, nur Log, §0b).
+        """
+        try:
+            client = self._client_or_create()
+        except SsrfBlocked as exc:
+            raise ArchiveError("wayback", "transport", transient=True) from exc
+        # Cache-Buster gemäß API-Doku; Header wie bei allen SPN2-Calls.
+        url = f"{SPN2_USER_STATUS_URL}?_t={time.time_ns()}"
+        try:
+            response = await client.get(url, headers=self._headers())
+        except httpx.TimeoutException as exc:
+            raise ArchiveError("wayback", "timeout", transient=True) from exc
+        except httpx.TransportError as exc:
+            raise ArchiveError("wayback", "transport", transient=True) from exc
+
+        error = _http_error_or_none(response, service="wayback")
+        if error is not None:
+            raise error
+        return user_status_summary(self._json_or_error(response))
 
     async def aclose(self) -> None:
         """Schließt den internen httpx-Client, falls einer erzeugt wurde."""

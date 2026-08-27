@@ -1,7 +1,9 @@
-"""Unit-Tests für die Pre-Flight-Archiv-Health-Check (Spec 0077, #77).
+"""Unit: Pre-Flight-Archiv-Health-Check (Spec 0077, überarbeitet in #108).
 
-Rein: Archiver als Fake, keine Netz-Calls (R-TEST-03). Deckt die Neutrale-URL-
-Eigenschaft (AC3) und die unveränderte Fehler-Propagation (AC1, Einheit) ab.
+Rein: Archiver als Fake (User-Status statt Capture-Probe), keine Netz-Calls
+(R-TEST-03). Deckt das neue Messobjekt ab: ``probe_archive`` ruft genau
+``user_status`` einmal ab, bewertet nichts (§0b), und der ``ArchiveError``
+des Archivers fliegt unverändert weiter.
 """
 
 from __future__ import annotations
@@ -9,60 +11,61 @@ from __future__ import annotations
 import pytest
 
 from wortlaut.archive.errors import ArchiveError
-from wortlaut.archive.preflight import PROBE_URL, probe_archive
+from wortlaut.archive.preflight import probe_archive
 
 
-class RecordingArchiver:
-    """Archiver-Fake, der jeden ``archive``-Aufruf (URL) aufzeichnet."""
+class UserStatusHealth:
+    """Archiver-Fake, der nur ``user_status`` kennt — die neue Probe (AC14/AC15).
+
+    ``user_status`` liefert die Log-Zeile oder wirft; Capture-Aufrufe werden
+    gezählt, damit belegt ist, dass die Probe KEINEN Capture absetzt.
+    """
 
     def __init__(self) -> None:
-        self.calls: list[str] = []
-        self.result: str | None = "https://web.archive.org/snapshot/xyz"
+        self.user_status_calls = 0
+        self.archive_calls = 0
+        self.summary: str = "available=3 processing=0 daily_captures=0/30000"
         self.error: ArchiveError | None = None
 
-    async def archive(self, origin_url: str) -> str:
-        self.calls.append(origin_url)
+    async def user_status(self) -> str:
+        self.user_status_calls += 1
         if self.error is not None:
             raise self.error
-        if self.result is None:
-            raise AssertionError("Archiver ohne Ergebnis und ohne Fehler konfiguriert")
-        return self.result
+        return self.summary
+
+    async def archive(self, origin_url: str) -> str:
+        # Bewusst vorhanden (der Archiver kann beides) — die Probe darf es
+        # NICHT aufrufen.
+        self.archive_calls += 1
+        raise AssertionError("die Pre-Flight-Probe darf keinen Capture absetzen")
 
 
-async def test_probe_returns_snapshot_url() -> None:
-    """AC3: Der Probe ruft ``archive`` genau 1× mit exakt ``settings.preflight_url``
-    auf und liefert die Snapshot-URL weiter. ``settings.preflight_url`` ist
-    Default = ``PROBE_URL`` — eine konstante, neutrale Domain, die NICHT eine
-    der zu ingestierenden ``origin_url``s ist."""
-    archiver = RecordingArchiver()
-    # settings.preflight_url hat als Default PROBE_URL (settings.py).
-    snapshot = await probe_archive(archiver, probe_url=PROBE_URL)
+async def test_probe_liest_user_status() -> None:
+    """AC14: ``probe_archive`` liefert die User-Status-Zusammenfassung
+    (available=3, daily_captures=0/30000) weiter — und es wird KEIN Capture
+    abgesetzt. Der User-Status-Call geht genau einmal raus."""
+    health = UserStatusHealth()
 
-    assert archiver.calls == [PROBE_URL]  # genau 1×, exakt die konfigurierte URL
-    assert snapshot == "https://web.archive.org/snapshot/xyz"
-    # Neutralität: die Probe-URL ist keine echte Quelle, keine unserer Quellen.
-    assert PROBE_URL not in ("http://a/p1.pdf", "https://dserver.bundestag.de/x.pdf")
+    result = await probe_archive(health)
+
+    assert result == "available=3 processing=0 daily_captures=0/30000"
+    assert health.user_status_calls == 1
+    assert health.archive_calls == 0  # kein Capture, kein Capture-Kontingent
 
 
-async def test_probe_uses_custom_preflight_url() -> None:
-    """AC3 (überschreibbar): ``probe_url`` wird 1:1 an ``archive`` durchgereicht."""
-    archiver = RecordingArchiver()
-    await probe_archive(archiver, probe_url="https://custom.example/")
-    assert archiver.calls == ["https://custom.example/"]
-
-
-async def test_probe_propagates_archive_error() -> None:
-    """AC1 (Einheit): ``probe_archive`` fängt nichts — der ``ArchiveError`` des
-    Archivers (mit Grund + Statuscode) fliegt unverändert nach oben."""
-    archiver = RecordingArchiver()
-    archiver.error = ArchiveError("wayback", "http_status", status_code=503, transient=True)
+async def test_probe_401_wirft() -> None:
+    """AC15: ungültige Zugangsdaten (401) → ``ArchiveError`` mit
+    ``reason == "unauthorized"`` fliegt unverändert nach oben — der Pre-Flight
+    ist damit exakt der Check, der kaputte Zugangsdaten VOR dem Lauf fängt."""
+    health = UserStatusHealth()
+    health.error = ArchiveError("wayback", "unauthorized", status_code=401, transient=False)
 
     with pytest.raises(ArchiveError) as excinfo:
-        await probe_archive(archiver, probe_url=PROBE_URL)
+        await probe_archive(health)
 
     err = excinfo.value
     assert err.service == "wayback"
-    assert err.reason == "http_status"
-    assert err.status_code == 503
-    assert str(err) == "wayback: http_status 503 (transient)"
-    assert archiver.calls == [PROBE_URL]  # der Call wurde abgesetzt, dann geworfen
+    assert err.reason == "unauthorized"
+    assert err.status_code == 401
+    assert err.transient is False
+    assert health.user_status_calls == 1  # der Call wurde abgesetzt, dann geworfen

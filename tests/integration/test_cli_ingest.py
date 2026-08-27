@@ -47,6 +47,10 @@ class _FakeArchiver:
     async def archive(self, origin_url: str) -> str:
         return "https://web.archive.org/snap"
 
+    async def user_status(self) -> str:
+        """Pre-Flight-Probe (§0b) — der Fake antwortet wie ein gesundes Konto."""
+        return "available=3 processing=0 daily_captures=0/30000"
+
     async def aclose(self) -> None:
         pass
 
@@ -109,6 +113,11 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, dsn: str, cfg: dict[str, str]) -> 
     monkeypatch.setenv("WORTLAUT_WORM_BUCKET", "wortlaut-worm")
     monkeypatch.setenv("WORTLAUT_WORM_SECURE", "false")
     monkeypatch.setenv("WORTLAUT_DIP_API_KEY", "dummy-key")
+    # §16.1: Zugangsdaten-Pflicht am Composition-Root (§4.5). Zusammengesetzt,
+    # nicht ausgeschrieben — ein schlüsselartiges Literal am Stück ist für
+    # python:S6698 und gitleaks von einem echten Fund nicht zu unterscheiden.
+    monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_ACCESS_KEY", "ia-" + "dummy-access")
+    monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_SECRET", "ia-" + "dummy-secret")
 
 
 def _ingest_args(*, no_preflight: bool = False) -> Namespace:
@@ -199,6 +208,10 @@ class _ControllableWayback:
         if self._state.fail:
             raise ArchiveError("wayback", "http_status", status_code=503, transient=True)
         return "https://web.archive.org/snap-0073-resume"
+
+    async def user_status(self) -> str:
+        """Pre-Flight-Probe (§0b) — der Fake antwortet wie ein gesundes Konto."""
+        return "available=3 processing=0 daily_captures=0/30000"
 
     async def aclose(self) -> None:
         pass
