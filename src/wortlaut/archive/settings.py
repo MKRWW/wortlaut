@@ -28,6 +28,8 @@ class ArchiveSettings(BaseSettings):
     # SPN2-Polling: Versuchslimit zählt Versuche, nicht Sekunden (Spec 0108 §4.4).
     spn2_poll_interval_seconds: float = 3.0
     spn2_poll_timeout_seconds: float = 180.0
+    attest_max_candidates: int = 3  # Snapshot-Abrufe je Quelle (Spec 0124 §4.2)
+    attest_max_snapshot_bytes: int = 100 * 1024 * 1024  # Größengrenze je Abruf (§4.3)
 
     @model_validator(mode="after")
     def _key_pair_must_be_complete(self) -> "ArchiveSettings":

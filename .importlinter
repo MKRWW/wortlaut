@@ -89,3 +89,19 @@ source_modules =
 forbidden_modules =
     wortlaut.archive
     wortlaut.timestamp
+
+# Spec 0124 §4.5: attest prueft nur. Kein Capture, kein Zeitstempeldienst — auch nicht indirekt.
+[importlinter:contract:attest-ohne-capture]
+name = Attest importiert weder Capture- noch Zeitstempel-Code
+type = forbidden
+source_modules =
+    wortlaut.pipeline.attest
+forbidden_modules =
+    wortlaut.archive.spn2
+    wortlaut.archive.archiver
+    wortlaut.timestamp
+# throttle.py referenziert archiver.Archiver nur unter TYPE_CHECKING (kein Runtime-Import).
+# Genau diese eine Kante wird hier ausgenommen — nicht global, sonst wuerde jede
+# Typ-Kopplung in allen Contracts unsichtbar.
+ignore_imports =
+    wortlaut.archive.throttle -> wortlaut.archive.archiver

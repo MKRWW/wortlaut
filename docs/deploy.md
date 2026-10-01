@@ -140,6 +140,19 @@ docker compose --env-file /srv/wortlaut/.env -f compose.yml \
   run --rm api python -m wortlaut reparse --dry-run
 ```
 
+Dazu kommt die Attestierung: `attest` prüft, ob der Internet Archive für jede
+Quelle einen Snapshot derselben URL mit denselben Bytes hat, und hält das in
+der append-only Tabelle `source_archive` fest. Der Lauf liest nur — er löst
+keine Captures aus und braucht keine Zugangsdaten. Neue Quellen sind anfangs
+oft `snapshot_unavailable` (frische Captures sind nicht sofort exakt abrufbar)
+— ein späterer Lauf holt das nach. **Exit 4** heißt: die Snapshot-Bytes weichen
+vom Ledger-Hash ab — die Quelle muss geprüft werden. Erst `--dry-run`:
+
+```
+docker compose --env-file /srv/wortlaut/.env -f compose.yml \
+  run --rm api python -m wortlaut attest --dry-run
+```
+
 **Immer erst mit kleinem `--limit`.** Erst wenn ein solcher Lauf `archive_failed=0`
 meldet, lohnt der volle Durchgang. Der Pre-Flight-Check prüft vorab, ob die
 Zugangsdaten akzeptiert werden und der Archivdienst antwortet — er existiert, weil ein

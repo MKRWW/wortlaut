@@ -60,6 +60,11 @@ _TRUST_LEVEL = PgEnum(
 )
 
 
+# Fremdschluessel-Ziel aller Tabellen, die an einer Quelle haengen
+# (span, Zeitstempel, Attestierung).
+_SOURCE_ID_FK = "source.id"
+
+
 class IngestAdapter(Base):
     """Erweiterbarkeits-Naht; immutabel je ``(name, version)`` (Trigger)."""
 
@@ -175,7 +180,7 @@ class Span(Base):
         PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
     )
     source_id: Mapped[UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("source.id"), nullable=False
+        PgUUID(as_uuid=True), ForeignKey(_SOURCE_ID_FK), nullable=False
     )
     speaker_id: Mapped[UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("speaker.id"), nullable=False
@@ -230,10 +235,38 @@ class SourceTimestamp(Base):
         PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
     )
     source_id: Mapped[UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("source.id"), nullable=False
+        PgUUID(as_uuid=True), ForeignKey(_SOURCE_ID_FK), nullable=False
     )
     tsa_name: Mapped[str] = mapped_column(Text, nullable=False)
     token_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SourceArchive(Base):
+    """Attestierung einer Quelle; Inhalt immutabel/append-only (Trigger, Spec 0124, ADR-0009 §2).
+
+    Eine Zeile entsteht nur, wenn die Bytes eines Fremdsnapshots nachweislich
+    ``source.content_hash`` entsprechen (SHA-256) — die Gleichheit erzwingt der
+    ``check_source_archive_hash``-Trigger in der Datenbank, nicht das ORM
+    (ADR-0003 rev.). Append-only je ``(source_id, archiver)``; „unattestiert“
+    ist abgeleitet (keine Zeile), kein Flag. Referenziert werden Quelle und
+    Snapshot, keine S3-Version im eigenen Speicher (ADR-0009 §2, #122).
+    """
+
+    __tablename__ = "source_archive"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    source_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(_SOURCE_ID_FK), nullable=False
+    )
+    archiver: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_url: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    verified_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
