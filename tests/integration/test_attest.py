@@ -309,8 +309,12 @@ async def test_list_sources_without_attestation(fresh_pg_dsn: str, worm_store: W
         c = await _ingest(
             sessions, worm_store, b"ac3 quelle c", origin="https://dserver.bundestag.de/ac3-c.pdf"
         )
-        assert a.status == "inserted" and b.status == "inserted" and c.status == "inserted"
-        assert a.source_id is not None and b.source_id is not None and c.source_id is not None
+        assert a.status == "inserted"
+        assert b.status == "inserted"
+        assert c.status == "inserted"
+        assert a.source_id is not None
+        assert b.source_id is not None
+        assert c.source_id is not None
 
         async with sessions() as session:
             pending = await list_sources_without_attestation(session)

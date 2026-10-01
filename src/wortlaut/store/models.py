@@ -60,6 +60,11 @@ _TRUST_LEVEL = PgEnum(
 )
 
 
+# Fremdschluessel-Ziel aller Tabellen, die an einer Quelle haengen
+# (span, Zeitstempel, Attestierung).
+_SOURCE_ID_FK = "source.id"
+
+
 class IngestAdapter(Base):
     """Erweiterbarkeits-Naht; immutabel je ``(name, version)`` (Trigger)."""
 
@@ -175,7 +180,7 @@ class Span(Base):
         PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
     )
     source_id: Mapped[UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("source.id"), nullable=False
+        PgUUID(as_uuid=True), ForeignKey(_SOURCE_ID_FK), nullable=False
     )
     speaker_id: Mapped[UUID] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("speaker.id"), nullable=False
@@ -230,7 +235,7 @@ class SourceTimestamp(Base):
         PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
     )
     source_id: Mapped[UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("source.id"), nullable=False
+        PgUUID(as_uuid=True), ForeignKey(_SOURCE_ID_FK), nullable=False
     )
     tsa_name: Mapped[str] = mapped_column(Text, nullable=False)
     token_ref: Mapped[str] = mapped_column(Text, nullable=False)
@@ -256,7 +261,7 @@ class SourceArchive(Base):
         PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
     )
     source_id: Mapped[UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("source.id"), nullable=False
+        PgUUID(as_uuid=True), ForeignKey(_SOURCE_ID_FK), nullable=False
     )
     archiver: Mapped[str] = mapped_column(Text, nullable=False)
     snapshot_url: Mapped[str] = mapped_column(Text, nullable=False)
