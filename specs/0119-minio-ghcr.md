@@ -63,16 +63,17 @@ Jeweils nur die eine Zeile `MINIO_IMAGE = "..."` ersetzen durch:
 
 ```python
 MINIO_IMAGE = (
-    "ghcr.io/mkrww/minio"
-    "@sha256:a16cad481969d7ddb6fcd2f1c58284af3d1266190b9bedc3ef0801aeb05a93a9"
+    "ghcr.io/mkrww/minio@sha256:a16cad481969d7ddb6fcd2f1c58284af3d1266190b9bedc3ef0801aeb05a93a9"
 )
 ```
 
-Die Aufteilung ist Pflicht: In einer Zeile waere sie laenger als die erlaubten 100 Zeichen (ruff E501).
+Die Klammer ist Pflicht: Ohne sie waere die Zeile laenger als die erlaubten 100 Zeichen (ruff E501).
+Diese Form ist zugleich die, die `ruff format` erzeugt.
 
-Direkt darüber einen zweizeiligen Kommentar setzen:
+Direkt darüber einen dreizeiligen Kommentar setzen (der ADR-0006-Verweis bleibt erhalten):
 
 ```python
+# ADR-0006: digest-gepinnt (repository@sha256, ohne Tag — sonst pullt docker-py nicht).
 # Unveraenderte Kopie von minio/minio:RELEASE.2025-09-07T16-13-09Z.
 # Upstream ist nicht mehr abrufbar (#119).
 ```

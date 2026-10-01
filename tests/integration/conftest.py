@@ -57,8 +57,11 @@ def sessions(db_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 
 # ADR-0006: digest-gepinnt (repository@sha256, ohne Tag — sonst pullt docker-py nicht).
-# Entspricht MinIO RELEASE.2025-09-07T16-13-09Z (Supply-Chain, R-SEC).
-MINIO_IMAGE = "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+# Unveraenderte Kopie von minio/minio:RELEASE.2025-09-07T16-13-09Z.
+# Upstream ist nicht mehr abrufbar (#119).
+MINIO_IMAGE = (
+    "ghcr.io/mkrww/minio@sha256:a16cad481969d7ddb6fcd2f1c58284af3d1266190b9bedc3ef0801aeb05a93a9"
+)
 
 
 @pytest.fixture
