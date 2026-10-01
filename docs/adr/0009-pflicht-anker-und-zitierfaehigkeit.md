@@ -1,6 +1,6 @@
 # ADR-0009: Pflicht-Anker — Erfassen, Verarbeiten und Zitieren werden getrennt
 
-- **Status:** Proposed (2026-08-28, überarbeitet 2026-10-01) — Annahme durch den Stakeholder steht aus
+- **Status:** Accepted (2026-10-01, Stakeholder-Approval) · vorgeschlagen 2026-08-28, überarbeitet 2026-10-01
 - **Kontext-Issue:** [#113](https://github.com/MKRWW/wortlaut/issues/113) · Auslöser: [#114](https://github.com/MKRWW/wortlaut/issues/114)
 - **Berührt:** R-CORE-02 (Wortlaut **unverändert**, Umsetzung ändert sich), R-DATA-01/02, R-PROC-04
 - **Baut auf:** [ADR-0008](0008-rfc3161-timestamping.md) (Eigenschaft B), #73, #74 (verworfen), #76, #78 (geparkt), #108

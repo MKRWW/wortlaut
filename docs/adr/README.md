@@ -19,4 +19,4 @@ per neuer ADR **abgelöst** (Status: Superseded by ADR-XXXX). IDs werden nie wie
 | [0006](0006-testing-tdd.md) | pytest + Testcontainers, TDD-Pflicht | Accepted |
 | [0007](0007-worm-lock-mode.md) | WORM-Lock-Modus: Governance + unbegrenzter Legal-Hold | Accepted |
 | [0008](0008-rfc3161-timestamping.md) | RFC-3161-Zeitstempel: TSA-Wahl, gepinnter Trust-Anker, Client-Bibliothek | Accepted |
-| [0009](0009-pflicht-anker-und-zitierfaehigkeit.md) | Pflicht-Anker: Erfassen, Verarbeiten und Zitieren werden getrennt | **Proposed** |
+| [0009](0009-pflicht-anker-und-zitierfaehigkeit.md) | Pflicht-Anker: Erfassen, Verarbeiten und Zitieren werden getrennt | Accepted |
