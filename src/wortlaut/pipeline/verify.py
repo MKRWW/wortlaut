@@ -4,6 +4,7 @@ Read-only. Die reine Hash-Rechnung bleibt in ``evidence`` (#3, ``content_hash``)
 hier nur I/O-Orchestrierung (source laden, WORM lesen). Öffentlich nachrechenbar:
 dieselbe deterministische SHA-256 wie beim Ingest → jeder kann ``expected`` gegen
 ``actual`` prüfen (Threat T2, Security §3.6). Kein LLM, keine Ausgabe-Glättung.
+Die Attestierung (#128) ist additiv: sie kommt aus der Datenbank, ohne Netz.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from wortlaut.evidence.hashing import content_hash
+from wortlaut.store.attestations import get_attestations_for_source
 from wortlaut.store.models import Source
 from wortlaut.store.sources import get_source_by_id
 from wortlaut.store.timestamps import get_timestamps_for_source
@@ -44,6 +46,13 @@ class VerifyReport:
     ] = "missing"
     timestamp_tsa: str | None = None
     timestamp_gen_time: datetime | None = None
+    # NEU (Spec 0128, additiv ans Ende): Attestierung aus ``source_archive`` —
+    # aus der Datenbank, ohne Netz. Kein Gate: ``ok``/``status`` bleiben hash-only.
+    attestation_status: Literal["ok", "missing"] = "missing"
+    attestation_archiver: str | None = None
+    attestation_snapshot_url: str | None = None
+    attestation_snapshot_at: datetime | None = None
+    attestation_verified_sha256: str | None = None
 
 
 async def verify_source(source_id: UUID, *, session: AsyncSession, worm: WormStore) -> VerifyReport:
@@ -63,6 +72,13 @@ async def verify_source(source_id: UUID, *, session: AsyncSession, worm: WormSto
         raw = await worm.get(source.raw_bytes_ref)
     except Exception:  # jeder WORM-Read-Fehler → worm_missing, NIE ein falsches ok (T2)
         logger.warning("WORM-Read fehlgeschlagen für source %s", source_id)
+        (
+            att_status,
+            att_archiver,
+            att_snapshot_url,
+            att_snapshot_at,
+            att_sha256,
+        ) = await _attestation_fields(source_id, session)
         return VerifyReport(
             False,
             source_id,
@@ -71,11 +87,23 @@ async def verify_source(source_id: UUID, *, session: AsyncSession, worm: WormSto
             None,
             source.archive_wayback,
             source.archive_today,
+            attestation_status=att_status,
+            attestation_archiver=att_archiver,
+            attestation_snapshot_url=att_snapshot_url,
+            attestation_snapshot_at=att_snapshot_at,
+            attestation_verified_sha256=att_sha256,
         )
 
     actual = content_hash(raw)
     matches = actual == expected
     status: Literal["ok", "hash_mismatch"] = "ok" if matches else "hash_mismatch"
+    (
+        att_status,
+        att_archiver,
+        att_snapshot_url,
+        att_snapshot_at,
+        att_sha256,
+    ) = await _attestation_fields(source_id, session)
     return VerifyReport(
         matches,
         source_id,
@@ -85,6 +113,11 @@ async def verify_source(source_id: UUID, *, session: AsyncSession, worm: WormSto
         source.archive_wayback,
         source.archive_today,
         *await _timestamp_fields(source_id, session, worm, source),
+        attestation_status=att_status,
+        attestation_archiver=att_archiver,
+        attestation_snapshot_url=att_snapshot_url,
+        attestation_snapshot_at=att_snapshot_at,
+        attestation_verified_sha256=att_sha256,
     )
 
 
@@ -122,3 +155,23 @@ async def _timestamp_fields(
         return ("unreadable", row.tsa_name, None)
     verdict = verify_token(token, content_hash=source.content_hash, tsa_name=row.tsa_name)
     return (verdict.status, verdict.tsa_name, verdict.gen_time)
+
+
+_AttestationStatus = Literal["ok", "missing"]
+
+
+async def _attestation_fields(
+    source_id: UUID, session: AsyncSession
+) -> tuple[_AttestationStatus, str | None, str | None, datetime | None, str | None]:
+    """Liest die erste Attestierung der Quelle (Spec 0128 §4).
+
+    Liefert ``(attestation_status, attestation_archiver, attestation_snapshot_url,
+    attestation_snapshot_at, attestation_verified_sha256)``. Rein additiv: ändert
+    ``ok``/``status`` **nicht** (kein Gate). Ohne Netzzugriff — es wird nur die
+    ``source_archive``-Zeile aus der Datenbank gelesen (Spec 0128 §0a).
+    """
+    rows = await get_attestations_for_source(session, source_id)
+    if not rows:
+        return ("missing", None, None, None, None)
+    row = rows[0]  # die erste Zeile (nach created_at, id)
+    return ("ok", row.archiver, row.snapshot_url, row.snapshot_at, row.verified_sha256)

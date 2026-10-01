@@ -103,6 +103,12 @@ class VerifyResult(BaseModel):
     timestamp_status: str
     timestamp_tsa: str | None
     timestamp_gen_time: datetime | None
+    # NEU (Spec 0128, additiv): Attestierung aus source_archive — ändert ok/status nicht
+    attestation_status: str
+    attestation_archiver: str | None
+    attestation_snapshot_url: str | None
+    attestation_snapshot_at: datetime | None
+    attestation_verified_sha256: str | None
 
 
 class SourceEvidence(BaseModel):
@@ -118,6 +124,12 @@ class SourceEvidence(BaseModel):
     byte_size: int
     mime_type: str
     retrieved_at: datetime
+    # NEU (Spec 0128, additiv): Attestierung aus source_archive — ändert ok/status nicht
+    attestation_status: str
+    attestation_archiver: str | None
+    attestation_snapshot_url: str | None
+    attestation_snapshot_at: datetime | None
+    attestation_verified_sha256: str | None
 
 
 class HealthStatus(BaseModel):

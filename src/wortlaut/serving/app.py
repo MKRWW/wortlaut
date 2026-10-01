@@ -37,6 +37,7 @@ from wortlaut.serving.schemas import (
     SpeakerInfo,
     VerifyResult,
 )
+from wortlaut.store.attestations import SourceArchiveRow, get_attestations_for_source
 from wortlaut.store.read import (
     ContextRow,
     SearchCriteria,
@@ -108,7 +109,7 @@ def _context_item(row: ContextRow) -> ContextItem:
     )
 
 
-def _source_evidence(row: SourceRow) -> SourceEvidence:
+def _source_evidence(row: SourceRow, attestation: SourceArchiveRow | None) -> SourceEvidence:
     return SourceEvidence(
         source_id=row.source_id,
         type=row.source_type,
@@ -120,6 +121,13 @@ def _source_evidence(row: SourceRow) -> SourceEvidence:
         byte_size=row.byte_size,
         mime_type=row.mime_type,
         retrieved_at=row.retrieved_at,
+        attestation_status="ok" if attestation is not None else "missing",
+        attestation_archiver=attestation.archiver if attestation is not None else None,
+        attestation_snapshot_url=attestation.snapshot_url if attestation is not None else None,
+        attestation_snapshot_at=attestation.snapshot_at if attestation is not None else None,
+        attestation_verified_sha256=(
+            attestation.verified_sha256 if attestation is not None else None
+        ),
     )
 
 
@@ -212,6 +220,11 @@ def create_app(
             timestamp_status=report.timestamp_status,
             timestamp_tsa=report.timestamp_tsa,
             timestamp_gen_time=report.timestamp_gen_time,
+            attestation_status=report.attestation_status,
+            attestation_archiver=report.attestation_archiver,
+            attestation_snapshot_url=report.attestation_snapshot_url,
+            attestation_snapshot_at=report.attestation_snapshot_at,
+            attestation_verified_sha256=report.attestation_verified_sha256,
         )
 
     @app.get("/v1/sources/{source_id}", responses={404: {"description": "Quelle nicht gefunden"}})
@@ -219,6 +232,7 @@ def create_app(
         row = await get_source(session, source_id)
         if row is None:
             raise HTTPException(status_code=404, detail="source not found")
-        return _source_evidence(row)
+        rows = await get_attestations_for_source(session, source_id)
+        return _source_evidence(row, rows[0] if rows else None)
 
     return app

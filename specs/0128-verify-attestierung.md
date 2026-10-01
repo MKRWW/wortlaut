@@ -106,8 +106,11 @@ async def get_attestations_for_source(
   ist die URL aus `source_archive`, **nicht** `archive_wayback` (Test mit verschiedenen Werten).
 - **AC7 — Kein Netz.** `pipeline/verify.py` und `serving/` importieren weder
   `wortlaut.archive.wayback_lookup` noch `wortlaut.archive.archiver` (import-linter-Contract).
-- **AC8 — Bestand.** Alle bestehenden Tests bleiben ohne Änderung grün; bestehende Felder und
-  Werte der Antworten sind unverändert.
+- **AC8 — Bestand.** Alle bestehenden Tests bleiben grün; bestehende Felder und Werte der
+  Antworten sind unverändert. Einzige erlaubte Änderung an bestehenden Tests: in
+  `tests/unit/test_verify.py` eine zweite autouse-Fixture `_no_attestation`, die
+  `get_attestations_for_source` mit `[]` stubbt — genau nach dem Muster der vorhandenen
+  `_no_timestamps`. Keine Assertion wird geändert.
 
 ## 6. Testplan
 
@@ -143,6 +146,7 @@ Snapshot vom 28.09. (nicht den eigenen Capture aus `archive_wayback`).
 - `tests/integration/test_attest.py`
 - `tests/integration/test_verify_integration.py`
 - `tests/integration/test_serving_api.py`
+- `tests/unit/test_verify.py` — nur die Fixture aus AC8
 
 ## 11. Umsetzungsdetails je Datei
 

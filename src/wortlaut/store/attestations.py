@@ -41,6 +41,16 @@ class NewSourceArchive:
     verified_sha256: str
 
 
+@dataclass(frozen=True)
+class SourceArchiveRow:
+    """Eine gespeicherte source_archive-Zeile (Archivar + Snapshot + geprüfter Hash)."""
+
+    archiver: str
+    snapshot_url: str
+    snapshot_at: datetime
+    verified_sha256: str
+
+
 async def list_sources_without_attestation(
     session: AsyncSession, *, limit: int | None = None
 ) -> list[PendingAttestation]:
@@ -95,3 +105,28 @@ async def insert_source_archive(session: AsyncSession, row: NewSourceArchive) ->
     await session.flush()
     await session.commit()
     return zeile.id
+
+
+async def get_attestations_for_source(
+    session: AsyncSession, source_id: UUID
+) -> list[SourceArchiveRow]:
+    """Alle ``source_archive``-Zeilen einer Quelle, sortiert nach ``created_at, id``.
+
+    Nur Read (Spec 0128 §0a): die Attestierung wird ausgewiesen, nicht abgerufen —
+    kein Netzzugriff, keine WORM-Lesung.
+    """
+    stmt = (
+        select(SourceArchive)
+        .where(SourceArchive.source_id == source_id)
+        .order_by(SourceArchive.created_at, SourceArchive.id)
+    )
+    result = await session.execute(stmt)
+    return [
+        SourceArchiveRow(
+            archiver=r.archiver,
+            snapshot_url=r.snapshot_url,
+            snapshot_at=r.snapshot_at,
+            verified_sha256=r.verified_sha256,
+        )
+        for r in result.scalars().all()
+    ]

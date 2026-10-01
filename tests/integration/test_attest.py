@@ -12,15 +12,21 @@ Fake, der die Fixture-Bytes liefert.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
+from uuid import UUID
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+)
 
 from wortlaut.archive.wayback_lookup import SnapshotCandidate, snapshot_url
 from wortlaut.evidence.hashing import content_hash
@@ -29,11 +35,16 @@ from wortlaut.ingest.dip import DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
 from wortlaut.pipeline.attest import attest_source
 from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
-from wortlaut.store.attestations import list_sources_without_attestation
+from wortlaut.store.attestations import (
+    get_attestations_for_source,
+    list_sources_without_attestation,
+)
 from wortlaut.store.migrations import upgrade_head
 from wortlaut.store.worm import WormStore
 
 pytestmark = pytest.mark.integration
+
+SeedAttestation = Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]]
 
 _FIXTURE = (
     Path(__file__).resolve().parent.parent / "fixtures" / "dip" / "plenarprotokoll_zweispaltig.pdf"
@@ -401,3 +412,47 @@ async def test_attest_end_to_end_and_idempotent(fresh_pg_dsn: str, worm_store: W
     finally:
         await engine.dispose()
     assert count == 1
+
+
+# ── AC1 (Spec 0128): get_attestations_for_source ─────────────────────────
+
+
+async def test_get_attestations_for_source(
+    fresh_pg_dsn: str,
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
+) -> None:
+    """AC1 (0128): Quelle mit Attestierung → genau eine Zeile mit ``archiver``,
+    ``snapshot_url``, ``snapshot_at`` und ``verified_sha256 == content_hash``;
+    ohne Attestierung → ``[]``."""
+    raw = b"0128 ac1 rohbytes der quelle"
+    origin = "https://dserver.bundestag.de/0128-ac1.pdf"
+    sessions, engine = await _fresh(fresh_pg_dsn)
+    try:
+        outcome = await _ingest(sessions, worm_store, raw, origin=origin)
+        assert outcome.status == "inserted"
+        source_id = outcome.source_id
+        assert source_id is not None
+        digest = content_hash(raw)
+
+        async with sessions() as session:
+            unattested = await get_attestations_for_source(session, source_id)
+        assert unattested == []
+
+        before = datetime.now(UTC)
+        async with sessions() as session:
+            await seed_attestation(session, source_id)
+            await session.commit()
+        after = datetime.now(UTC)
+
+        async with sessions() as session:
+            rows = await get_attestations_for_source(session, source_id)
+    finally:
+        await engine.dispose()
+
+    assert len(rows) == 1
+    assert rows[0].archiver == "wayback"
+    assert rows[0].snapshot_url == "https://web.archive.org/web/20260101000000/" + origin
+    assert rows[0].verified_sha256 == digest
+    assert rows[0].snapshot_at >= before
+    assert rows[0].snapshot_at <= after
