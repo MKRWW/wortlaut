@@ -237,3 +237,31 @@ class SourceTimestamp(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class SourceArchive(Base):
+    """Attestierung einer Quelle; Inhalt immutabel/append-only (Trigger, Spec 0124, ADR-0009 §2).
+
+    Eine Zeile entsteht nur, wenn die Bytes eines Fremdsnapshots nachweislich
+    ``source.content_hash`` entsprechen (SHA-256) — die Gleichheit erzwingt der
+    ``check_source_archive_hash``-Trigger in der Datenbank, nicht das ORM
+    (ADR-0003 rev.). Append-only je ``(source_id, archiver)``; „unattestiert“
+    ist abgeleitet (keine Zeile), kein Flag. Referenziert werden Quelle und
+    Snapshot, keine S3-Version im eigenen Speicher (ADR-0009 §2, #122).
+    """
+
+    __tablename__ = "source_archive"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    source_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("source.id"), nullable=False
+    )
+    archiver: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_url: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    verified_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )

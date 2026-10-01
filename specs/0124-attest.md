@@ -424,7 +424,9 @@ Aufrufer in `archiver.py` funktionieren damit unverändert weiter.
   Leere Antwort oder nur Kopfzeile → `[]`. Die erste Zeile ist die Kopfzeile. Filter nach §4.2.
   `timestamp` muss genau 14 Ziffern sein, sonst Zeile verwerfen.
   Nicht-JSON-Antwort → `ArchiveError` permanent, `reason="invalid_response"`.
-- `fetch()`: Pfad `f"/web/{c.timestamp}id_/{c.original}"`; `client.stream("GET", …)`; Status
+- `fetch()`: Pfad `f"/web/{c.timestamp}id_/{c.original}"`; `client.stream("GET", …)` mit Header
+  `Accept-Encoding: identity` (httpx bietet sonst gzip an; gehasht werden muessen die unkomprimierten
+  Rohbytes, auch wenn der Dienst kuenftig komprimiert ausliefert); Status
   nach §4.3; beim 200 die Bytes chunkweise lesen und bei Überschreiten von `max_bytes` mit
   `ArchiveError(service="wayback", reason="too_large", transient=False)` abbrechen.
   `Memento-Datetime` mit `email.utils.parsedate_to_datetime` parsen und mit dem Zeitstempel
@@ -491,7 +493,15 @@ forbidden_modules =
     wortlaut.archive.spn2
     wortlaut.archive.archiver
     wortlaut.timestamp
+# throttle.py referenziert archiver.Archiver nur unter TYPE_CHECKING (kein Runtime-Import).
+# Genau diese eine Kante wird hier ausgenommen — NICHT global per exclude_type_checking_imports,
+# das wuerde jede Typ-Kopplung in allen Contracts unsichtbar machen.
+ignore_imports =
+    wortlaut.archive.throttle -> wortlaut.archive.archiver
 ```
+
+**Kein** `exclude_type_checking_imports` im `[importlinter]`-Kopf (Review-Befund: das schwächt alle
+Contracts, auch die Kern/Serving-Grenze).
 
 ### `docs/deploy.md` (ändern)
 

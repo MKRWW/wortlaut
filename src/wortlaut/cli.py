@@ -24,13 +24,16 @@ from wortlaut.archive.preflight import probe_archive
 from wortlaut.archive.settings import ArchiveSettings
 from wortlaut.archive.spn2 import IaCredentials
 from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
+from wortlaut.archive.wayback_lookup import HttpWaybackLookup
 from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
+from wortlaut.pipeline.attest import AttestOutcome, attest_source
 from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
 from wortlaut.pipeline.reparse import ReparseOutcome, reparse_source
 from wortlaut.pipeline.timestamp import TimestampOutcome, timestamp_source
 from wortlaut.serving.settings import ApiSettings
 from wortlaut.store.adapters import ensure_ingest_adapter
+from wortlaut.store.attestations import list_sources_without_attestation
 from wortlaut.store.db import create_async_engine_from, make_sessionmaker
 from wortlaut.store.migrations import upgrade_head
 from wortlaut.store.reparse import list_sources_without_spans
@@ -67,14 +70,20 @@ def main(argv: list[str] | None = None) -> int:
     p_reparse.add_argument("--no-migrate", action="store_true")
     p_reparse.add_argument("--dry-run", action="store_true")
 
+    p_attest = subparsers.add_parser("attest")
+    p_attest.add_argument("--limit", type=int, default=None)
+    p_attest.add_argument("--dry-run", action="store_true")
+    p_attest.add_argument("--no-migrate", action="store_true")
+
     subparsers.add_parser("serve")
 
     args = parser.parse_args(argv)
 
     subcommand = getattr(args, "subcommand", None)
-    if subcommand not in ("ingest", "timestamp", "reparse", "serve"):
+    if subcommand not in ("ingest", "timestamp", "reparse", "attest", "serve"):
         print(
-            "Fehler: Subcommand 'ingest', 'timestamp', 'reparse' oder 'serve' erforderlich",
+            "Fehler: Subcommand 'ingest', 'timestamp', 'reparse', 'attest' oder 'serve' "
+            "erforderlich",
             file=sys.stderr,
         )
         return 2
@@ -85,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_timestamp(args))
     if subcommand == "reparse":
         return asyncio.run(_run_reparse(args))
+    if subcommand == "attest":
+        return asyncio.run(_run_attest(args))
     # uvicorn bringt seinen eigenen Event-Loop mit — kein asyncio.run drumherum.
     return _run_serve()
 
@@ -318,6 +329,96 @@ async def _run_reparse(args: argparse.Namespace) -> int:
         return 1 if stats.error > 0 else 0
     finally:
         await _aclose_all(adapter.aclose, engine.dispose)
+
+
+async def _run_attest(args: argparse.Namespace) -> int:
+    """Composition-Root für den Attestierungs-Pass (Spec 0124 §11).
+
+    Settings → Engine → WORM → Pass. Exit: 0 = ok, 2 = Konfiguration,
+    3 = Circuit-Breaker, 4 = bytes/hash_mismatch (Alarm, Muster ``timestamp``),
+    sonst 1 = Fehler bei einer Quelle. Kein Capture und **keine**
+    Internet-Archive-Zugangsdaten: ``attest`` liest nur (Spec 0124 §2).
+    """
+    # 1) Settings aus ENV — Konfiguration ist EIN Block, EIN Rückgabepunkt (Exit 2).
+    #    Bewusst keine Prüfung auf IA-Zugangsdaten: nur lesende Anfragen.
+    try:
+        db_settings = DbSettings()
+        worm_settings = WormSettings()
+        archive_settings = ArchiveSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return 2
+
+    engine = create_async_engine_from(db_settings)
+    sessions = make_sessionmaker(engine)
+    worm = MinioWormStore(worm_settings)
+    lookup: HttpWaybackLookup | None = None
+
+    try:
+        # 2) Bootstrap wie ``timestamp``.
+        if not args.no_migrate:
+            await upgrade_head(db_settings.dsn)
+        await worm.ensure_bucket()
+
+        # 3) Auswahl: abgeleitet unattestiert (keine source_archive-Zeile).
+        async with sessions() as s:
+            pending = await list_sources_without_attestation(s, limit=args.limit)
+
+        if args.dry_run:
+            print(f"pending={len(pending)} dry_run=True")
+            return 0
+
+        # 4) Lookup erst JETZT bauen: ``--dry-run`` löst keinen einzigen Abruf aus.
+        lookup = HttpWaybackLookup(
+            limiter=RateLimiter(archive_settings.wayback_min_interval_seconds),
+            max_bytes=archive_settings.attest_max_snapshot_bytes,
+            attempts=archive_settings.retry_attempts,
+            base_delay_seconds=archive_settings.retry_base_delay_seconds,
+        )
+
+        # 5) Pass: je Quelle eine eigene Session.
+        stats = _AttestStats()
+        breaker_limit = archive_settings.consecutive_failure_limit
+        mismatch_detail = {
+            "bytes_mismatch": "Snapshot-Bytes passen nicht zum Ledger-Hash",
+            "hash_mismatch": "WORM-Bytes passen nicht zum Ledger-Hash",
+        }
+
+        for source in pending:
+            async with sessions() as s:
+                outcome = await attest_source(
+                    source,
+                    session=s,
+                    worm=worm,
+                    lookup=lookup,
+                    max_candidates=archive_settings.attest_max_candidates,
+                )
+            stats.record(outcome)
+            detail = mismatch_detail.get(outcome.status)
+            if detail is not None:
+                print(f"{outcome.status}: {outcome.source_id} ({detail})", file=sys.stderr)
+
+            # Circuit-Breaker: consecutive_failure_limit aufeinanderfolgende error.
+            if 0 < breaker_limit <= stats.consecutive_error:
+                print(
+                    f"Circuit-Breaker: {breaker_limit} aufeinanderfolgende error — Abbruch",
+                    file=sys.stderr,
+                )
+                print(stats.summary_line(len(pending)))
+                return 3
+
+        print(stats.summary_line(len(pending)))
+        # bytes/hash_mismatch sind Alarme (nicht Statistik): Exit 4, Vorrang vor 1.
+        if stats.bytes_mismatch > 0 or stats.hash_mismatch > 0:
+            return 4
+        if stats.error > 0:
+            return 1
+        return 0
+    finally:
+        if lookup is not None:
+            await _aclose_all(lookup.aclose, engine.dispose)
+        else:
+            await _aclose_all(engine.dispose)
 
 
 def _run_serve() -> int:
@@ -604,5 +705,51 @@ class _ReparseStats:
             f"pending={pending} reparsed={self.reparsed} spans_total={self.spans_total} "
             f"still_empty={self.still_empty} no_text={self.no_text} "
             f"skipped_has_spans={self.skipped_has_spans} hash_mismatch={self.hash_mismatch} "
+            f"worm_missing={self.worm_missing} error={self.error}"
+        )
+
+
+@dataclass
+class _AttestStats:
+    """Attestierungs-Pass-Laufzähler als EIN Bündel (R-ARCH-04)."""
+
+    attested: int = 0
+    no_matching_snapshot: int = 0
+    snapshot_unavailable: int = 0
+    bytes_mismatch: int = 0
+    hash_mismatch: int = 0
+    worm_missing: int = 0
+    error: int = 0
+    consecutive_error: int = 0
+
+    def record(self, outcome: AttestOutcome) -> None:
+        """Bucht ein AttestOutcome ein; ``error`` verlängert die Serie, der Rest bricht sie."""
+        status = outcome.status
+        if status == "attested":
+            self.attested += 1
+        elif status == "no_matching_snapshot":
+            self.no_matching_snapshot += 1
+        elif status == "snapshot_unavailable":
+            self.snapshot_unavailable += 1
+        elif status == "bytes_mismatch":
+            self.bytes_mismatch += 1
+        elif status == "hash_mismatch":
+            self.hash_mismatch += 1
+        elif status == "worm_missing":
+            self.worm_missing += 1
+        elif status == "error":
+            self.error += 1
+        if status == "error":
+            self.consecutive_error += 1
+        else:
+            self.consecutive_error = 0
+
+    def summary_line(self, pending: int) -> str:
+        """Genau eine Ergebniszeile; Felder in fester Reihenfolge (AC13)."""
+        return (
+            f"pending={pending} attested={self.attested} "
+            f"no_matching_snapshot={self.no_matching_snapshot} "
+            f"snapshot_unavailable={self.snapshot_unavailable} "
+            f"bytes_mismatch={self.bytes_mismatch} hash_mismatch={self.hash_mismatch} "
             f"worm_missing={self.worm_missing} error={self.error}"
         )

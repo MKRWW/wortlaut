@@ -13,13 +13,13 @@ from collections.abc import Awaitable, Callable
 from wortlaut.archive.errors import ArchiveError
 
 
-async def with_retry(
-    operation: Callable[[], Awaitable[str]],
+async def with_retry[T](
+    operation: Callable[[], Awaitable[T]],
     *,
     attempts: int = 3,
     base_delay_seconds: float = 2.0,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-) -> str:
+) -> T:
     """Wiederholt `operation` NUR bei `ArchiveError` mit `transient=True`.
 
     Exponentieller Backoff: `base_delay_seconds * 2 ** (versuch_index)` —
