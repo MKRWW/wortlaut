@@ -9,7 +9,7 @@
 > - Halte die Do-NOT-Liste in **§12** ein.
 > - Führe **keine** git-, docker-, npm-, uv- oder alembic-Befehle aus außer dem in **§13**.
 
-- **Story/Issue:** #124 · **Epic:** #123 (Increment 1) · **Status:** Draft
+- **Story/Issue:** #124 · **Epic:** #123 (Increment 1) · **Status:** Reviewed
 - **Phase/Layer:** phase/1-mvp · `archive`, `evidence`, `store`, `pipeline`, `cli`, Migration
 - Methodik: [../docs/engineering.md](../docs/engineering.md) · Regeln: [../docs/rules.md](../docs/rules.md)
 - Entscheidung: [ADR-0009](../docs/adr/0009-pflicht-anker-und-zitierfaehigkeit.md) §2, §3
@@ -112,7 +112,8 @@ class HttpWaybackLookup:  # erfüllt WaybackLookup
     def __init__(self, *, limiter: RateLimiter | None = None,
                  max_bytes: int = 100 * 1024 * 1024, attempts: int = 3,
                  base_delay_seconds: float = 2.0,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None: ...
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 client: httpx.AsyncClient | None = None) -> None: ...   # client: Test-Seam
 
 def snapshot_url(candidate: SnapshotCandidate) -> str: ...   # https://web.archive.org/web/<ts>/<original>
 
