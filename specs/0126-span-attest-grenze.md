@@ -9,7 +9,7 @@
 > - Halte die Do-NOT-Liste in **§12** ein.
 > - Führe **keine** git-, docker-, npm-, uv- oder alembic-Befehle aus außer dem in **§13**.
 
-- **Story/Issue:** #126 · **Epic:** #123 (Increment 2) · **Status:** Draft
+- **Story/Issue:** #126 · **Epic:** #123 (Increment 2) · **Status:** Reviewed
 - **Phase/Layer:** phase/1-mvp · Migration, `pipeline`, `store`, `cli`, Tests
 - Methodik: [../docs/engineering.md](../docs/engineering.md) · Regeln: [../docs/rules.md](../docs/rules.md)
 - Entscheidung: [ADR-0009](../docs/adr/0009-pflicht-anker-und-zitierfaehigkeit.md) §1, Konsequenzen
