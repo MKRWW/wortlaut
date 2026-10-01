@@ -9,7 +9,7 @@
 > - Halte die Do-NOT-Liste in **§12** ein.
 > - Führe **keine** git-, docker-, npm-, uv- oder alembic-Befehle aus außer dem in **§13**.
 
-- **Story/Issue:** #128 · **Epic:** #123 · **Status:** Draft
+- **Story/Issue:** #128 · **Epic:** #123 · **Status:** Reviewed
 - **Phase/Layer:** phase/1-mvp · `store`, `pipeline`, `serving`
 - Methodik: [../docs/engineering.md](../docs/engineering.md) · Regeln: [../docs/rules.md](../docs/rules.md)
 - Baut auf **#124** (`source_archive`), **#126** (Ausgabe nur für attestierte Quellen), **#76**
