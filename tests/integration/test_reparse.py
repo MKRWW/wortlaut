@@ -1,17 +1,18 @@
-"""Integration (Spec 0118): reparse_source — Auswahl, Gleichheit mit ingest,
+"""Integration (Spec 0118/#126): reparse_source — Auswahl, Gleichheit,
 Fehlerpfad, Idempotenz, Nebenläufigkeit.
 
 Echtes Postgres (``fresh_pg_dsn``) + MinIO (``worm_store``); Archiver gemockt
-(R-TEST-03). „Quelle ohne Spans“ entsteht per ``ingest_source`` mit einer
-Adapter-Unterklasse, deren ``parse`` ``[]`` liefert (Szenario 21/90: gespeicherter
-Text sauber, damals null Treffer); ``reparse_source`` läuft dann mit dem echten
-Fixture-Adapter (echtes normalize/parse aus #41) — ``fetch`` bleibt unberührt.
+(R-TEST-03). „Quelle ohne Spans“ entsteht per ``ingest_source`` (seither ohne
+Span-Erzeugung, #126) mit Adapter-Unterklassen; ``reparse_source`` wählt nur
+noch attestierte Quellen (ADR-0009) — die Tests attestieren daher jede Quelle
+nach dem Ingest. ``reparse_source`` läuft mit dem echten Fixture-Adapter
+(echtes normalize/parse aus #41) — ``fetch`` bleibt unberührt.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 
 from wortlaut.ingest.adapter import RawSource, SourceRef, SpanDraft
 from wortlaut.ingest.dip import DipPlenarprotokollAdapter
@@ -28,10 +29,12 @@ from wortlaut.ingest.settings import DipSettings
 from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
 from wortlaut.pipeline.reparse import ReparseOutcome, reparse_source
 from wortlaut.store.migrations import upgrade_head
-from wortlaut.store.reparse import list_sources_without_spans
+from wortlaut.store.reparse import list_sources_without_spans, lock_source_if_spanless
 from wortlaut.store.worm import WormStore
 
 pytestmark = pytest.mark.integration
+
+SeedAttestation = Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]]
 
 _FIXTURE = (
     Path(__file__).resolve().parent.parent / "fixtures" / "dip" / "plenarprotokoll_zweispaltig.pdf"
@@ -206,19 +209,44 @@ async def _span_set(
 async def test_list_sources_without_spans_selects_only_spanless_same_adapter(
     fresh_pg_dsn: str,
     worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:
-    """AC1: A ohne Spans (dip-api), B mit Spans (dip-api), C ohne Spans (fremder
-    Adapter) → Auswahl für dip-api ist genau [A]."""
+    """AC1: A ohne Spans (dip-api, attestiert), B mit Spans (dip-api, per
+    attest + reparse), C ohne Spans (fremder Adapter, attestiert) → Auswahl für
+    dip-api ist genau [A]."""
+    fixture = _FIXTURE.read_bytes()
     sessions, engine = await _fresh(fresh_pg_dsn)
     try:
         a = await _ingest_without_spans(sessions, worm_store, b"ac1-source-a", _EmptyDipAdapter)
-        b = await _ingest_without_spans(
-            sessions, worm_store, _FIXTURE.read_bytes(), _FixtureDipAdapter
-        )
+        b = await _ingest_without_spans(sessions, worm_store, fixture, _FixtureDipAdapter)
         c = await _ingest_without_spans(sessions, worm_store, b"ac1-source-c", _OtherAdapter)
-        assert a.status == "inserted" and a.span_count == 0
-        assert b.status == "inserted" and b.span_count > 0
-        assert c.status == "inserted" and c.span_count == 0
+        assert a.status == "inserted"
+        assert a.span_count == 0
+        assert b.status == "inserted"
+        assert b.span_count == 0
+        assert c.status == "inserted"
+        assert c.span_count == 0
+        assert a.source_id is not None
+        assert b.source_id is not None
+        assert c.source_id is not None
+
+        async with sessions() as session:
+            await seed_attestation(session, a.source_id)
+            await seed_attestation(session, b.source_id)
+            await seed_attestation(session, c.source_id)
+            await session.commit()
+            pending = await list_sources_without_spans(session, adapter_name="dip-api")
+        assert {s.source_id for s in pending} == {a.source_id, b.source_id}
+
+        target = next(s for s in pending if s.source_id == b.source_id)
+        async with sessions() as session:
+            re_b = await reparse_source(
+                target,
+                session=session,
+                worm=worm_store,
+                adapter=_FixtureDipAdapter(_raw(fixture)),
+            )
+        assert re_b.status == "reparsed"
 
         async with sessions() as session:
             result = await list_sources_without_spans(session, adapter_name="dip-api")
@@ -234,11 +262,13 @@ async def test_reparse_yields_same_spans_as_ingest(
     fresh_pg_dsn: str,
     second_pg_dsn: str,
     worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:
-    """AC2: DB1 = ingest mit funktionierendem Parser; DB2 = ingest mit Parser,
-    der ``[]`` liefert, + anschließendes reparse_source → gleiche, nicht leere
-    Mengen von (text_start, text_end, span_hash, spoken_at, locator, permalink,
-    speaker.full_name, mandate.party)."""
+    """AC2: DB1 = ingest + attest + reparse mit funktionierendem Parser; DB2 =
+    ingest + attest + reparse mit Parser, der ``[]`` liefert → gleiche, nicht
+    leere Mengen von (text_start, text_end, span_hash, spoken_at, locator,
+    permalink, speaker.full_name, mandate.party) in beiden DBs (reparse vs.
+    reparse, #126)."""
     fixture = _FIXTURE.read_bytes()
     ref = SourceRef(origin_url=_ORIGIN, source_type="plenarprotokoll", hint={})
     sessions1, engine1 = await _fresh(fresh_pg_dsn)
@@ -255,7 +285,22 @@ async def test_reparse_yields_same_spans_as_ingest(
                 )
             assert outcome1.status == "inserted"
             assert outcome1.source_id is not None
-            assert outcome1.span_count > 0
+            assert outcome1.span_count == 0  # #126: ingest erzeugt keine Spans mehr (ADR-0009)
+
+            async with sessions1() as session:
+                await seed_attestation(session, outcome1.source_id)
+                await session.commit()
+                pending1 = await list_sources_without_spans(session, adapter_name="dip-api")
+            assert len(pending1) == 1
+
+            async with sessions1() as session:
+                re_outcome1 = await reparse_source(
+                    pending1[0],
+                    session=session,
+                    worm=worm_store,
+                    adapter=_FixtureDipAdapter(_raw(fixture)),
+                )
+            assert re_outcome1.status == "reparsed"
 
             async with sessions2() as session:
                 await _seed_adapter(session, "dip-api")
@@ -270,6 +315,8 @@ async def test_reparse_yields_same_spans_as_ingest(
             assert outcome2.span_count == 0
 
             async with sessions2() as session:
+                await seed_attestation(session, outcome2.source_id)
+                await session.commit()
                 pending = await list_sources_without_spans(session, adapter_name="dip-api")
             assert len(pending) == 1
             assert pending[0].source_id == outcome2.source_id
@@ -282,7 +329,7 @@ async def test_reparse_yields_same_spans_as_ingest(
                     adapter=_FixtureDipAdapter(_raw(fixture)),
                 )
             assert re_outcome.status == "reparsed"
-            assert re_outcome.span_count == outcome1.span_count
+            assert re_outcome.span_count == re_outcome1.span_count
 
         db1 = await _span_set(sessions1, outcome1.source_id)
         db2 = await _span_set(sessions2, outcome2.source_id)
@@ -300,6 +347,7 @@ async def test_reparse_yields_same_spans_as_ingest(
 async def test_failure_mid_source_leaves_no_spans(
     fresh_pg_dsn: str,
     worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:
     """AC4: init_span_state wirft beim zweiten Aufruf → Status error, 0 Spans
     (Rollback), Quelle erscheint erneut in list_sources_without_spans."""
@@ -311,6 +359,10 @@ async def test_failure_mid_source_leaves_no_spans(
         outcome = await _ingest_without_spans(sessions, worm_store, fixture, _EmptyDipAdapter)
         assert outcome.status == "inserted"
         assert outcome.source_id is not None
+
+        async with sessions() as session:
+            await seed_attestation(session, outcome.source_id)
+            await session.commit()
 
         async with sessions() as session:
             pending = await list_sources_without_spans(session, adapter_name="dip-api")
@@ -353,7 +405,11 @@ async def test_failure_mid_source_leaves_no_spans(
 # ── AC5: Idempotenz (zweiter Lauf ist ein No-Op) ─────────────────────────
 
 
-async def test_second_run_is_noop(fresh_pg_dsn: str, worm_store: WormStore) -> None:
+async def test_second_run_is_noop(
+    fresh_pg_dsn: str,
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
+) -> None:
     """AC5: Nach erfolgreichem reparse (n > 0 Spans) wird die Quelle nicht mehr
     ausgewählt; ein weiterer direkter Lauf ist skipped_has_spans, Span-Zahl bleibt n."""
     fixture = _FIXTURE.read_bytes()
@@ -361,6 +417,10 @@ async def test_second_run_is_noop(fresh_pg_dsn: str, worm_store: WormStore) -> N
     try:
         outcome = await _ingest_without_spans(sessions, worm_store, fixture, _EmptyDipAdapter)
         assert outcome.source_id is not None
+
+        async with sessions() as session:
+            await seed_attestation(session, outcome.source_id)
+            await session.commit()
 
         async with sessions() as session:
             pending = await list_sources_without_spans(session, adapter_name="dip-api")
@@ -399,7 +459,11 @@ async def test_second_run_is_noop(fresh_pg_dsn: str, worm_store: WormStore) -> N
 # ── AC6: Nebenläufigkeit (zwei Sessions, ein Schreiblauf) ────────────────
 
 
-async def test_concurrent_runs_write_once(fresh_pg_dsn: str, worm_store: WormStore) -> None:
+async def test_concurrent_runs_write_once(
+    fresh_pg_dsn: str,
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
+) -> None:
     """AC6: Zwei getrennte Sessions per asyncio.gather → genau ein Schreiblauf:
     ein Ergebnis reparsed, das andere skipped_has_spans; die Quelle hat genau
     so viele Spans wie nach einem einzelnen Lauf."""
@@ -408,6 +472,10 @@ async def test_concurrent_runs_write_once(fresh_pg_dsn: str, worm_store: WormSto
     try:
         outcome = await _ingest_without_spans(sessions, worm_store, fixture, _EmptyDipAdapter)
         assert outcome.source_id is not None
+
+        async with sessions() as session:
+            await seed_attestation(session, outcome.source_id)
+            await session.commit()
 
         async with sessions() as session:
             pending = await list_sources_without_spans(session, adapter_name="dip-api")
@@ -428,5 +496,48 @@ async def test_concurrent_runs_write_once(fresh_pg_dsn: str, worm_store: WormSto
 
         # Fixture aus #41: genau 2 Spans (Präsidiums-Marker liefert keinen)
         assert await _span_count(sessions, source.source_id) == 2
+    finally:
+        await engine.dispose()
+
+
+# ── AC6 (#126): Auswahl/Sperre nur für attestierte Quellen ────────────────
+
+
+async def test_reparse_selects_only_attested(
+    fresh_pg_dsn: str,
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
+) -> None:
+    """AC6: zwei spanlose Quellen desselben Adapters, eine attestiert, eine
+    nicht → ``list_sources_without_spans`` liefert nur die attestierte;
+    ``lock_source_if_spanless`` liefert für die unattestierte False."""
+    sessions, engine = await _fresh(fresh_pg_dsn)
+    try:
+        a = await _ingest_without_spans(
+            sessions, worm_store, b"ac6 quelle attestiert", _EmptyDipAdapter
+        )
+        b = await _ingest_without_spans(
+            sessions, worm_store, b"ac6 quelle unattestiert", _EmptyDipAdapter
+        )
+        assert a.status == "inserted"
+        assert b.status == "inserted"
+        assert a.source_id is not None
+        assert b.source_id is not None
+
+        async with sessions() as session:
+            await seed_attestation(session, a.source_id)
+            await session.commit()
+
+        async with sessions() as session:
+            result = await list_sources_without_spans(session, adapter_name="dip-api")
+        assert [s.source_id for s in result] == [a.source_id]
+
+        async with sessions() as session:
+            locked_b = await lock_source_if_spanless(session, b.source_id)
+        assert locked_b is False
+
+        async with sessions() as session:
+            locked_a = await lock_source_if_spanless(session, a.source_id)
+        assert locked_a is True
     finally:
         await engine.dispose()

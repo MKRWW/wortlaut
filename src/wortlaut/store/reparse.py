@@ -1,10 +1,13 @@
-"""Span-Nachzug im Store: abgeleitete Auswahl spanloser Quellen + Zeilensperre (#118).
+"""Span-Nachzug im Store: abgeleitete Auswahl spanloser, attestierter Quellen
++ Zeilensperre (#118, #126).
 
 „Ohne Spans“ ist **abgeleitet** (keine ``span``-Zeile) — kein Status-Flag, kein
 UPDATE; dasselbe Muster wie der Zeitstempel-Rückstand aus #76
-(``list_sources_without_timestamp``). ``span`` ist per Trigger append-only
-(``trg_span_immutable``, R-DATA-01) und hat keinen UNIQUE-Schlüssel, der
-Duplikate verhindern würde — deshalb prüft ``lock_source_if_spanless`` die
+(``list_sources_without_timestamp``). Seit #126 wählt der Nachzug nur Quellen
+mit ``source_archive``-Zeile — attestierte Quellen (ADR-0009); „unattestiert“
+ist ebenso abgeleitet (keine Zeile) und kein Flag. ``span`` ist per Trigger
+append-only (``trg_span_immutable``, R-DATA-01) und hat keinen UNIQUE-Schlüssel,
+der Duplikate verhindern würde — deshalb prüft ``lock_source_if_spanless`` die
 Span-Losigkeit per ``SELECT … FOR UPDATE`` in derselben Transaktion: der zweite
 gleichzeitige Lauf wartet auf die Sperre, sieht danach die Spans und überspringt.
 Kein Commit/Rollback in der Funktion — die umgebende Transaktion entscheidet.
@@ -19,7 +22,7 @@ from uuid import UUID
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from wortlaut.store.models import Source, Span
+from wortlaut.store.models import Source, SourceArchive, Span
 
 
 @dataclass(frozen=True)
@@ -41,10 +44,13 @@ async def list_sources_without_spans(
 ) -> list[SpanlessSource]:
     """Alle ``source`` ohne eine ``span``-Zeile mit dem übergebenen ``adapter_name``.
 
-    „Ohne Spans“ ist abgeleitet (keine Zeile). Stabil sortiert nach
-    ``created_at, id``; optionales ``limit``. Kein UPDATE/DELETE — nur Read.
+    „Ohne Spans“ ist abgeleitet (keine Zeile); zusätzlich nur Quellen mit einer
+    ``source_archive``-Zeile — attestierte Quellen (ADR-0009, #126). Stabil
+    sortiert nach ``created_at, id``; optionales ``limit``. Kein UPDATE/DELETE —
+    nur Read.
     """
     span_exists = exists().where(Span.source_id == Source.id)
+    attested = exists().where(SourceArchive.source_id == Source.id)
     stmt = (
         select(
             Source.id,
@@ -56,7 +62,7 @@ async def list_sources_without_spans(
             Source.retrieved_at,
             Source.normalized_text,
         )
-        .where(~span_exists, Source.adapter_name == adapter_name)
+        .where(~span_exists, attested, Source.adapter_name == adapter_name)
         .order_by(Source.created_at, Source.id)
     )
     if limit is not None:
@@ -78,12 +84,20 @@ async def list_sources_without_spans(
 
 
 async def lock_source_if_spanless(session: AsyncSession, source_id: UUID) -> bool:
-    """Sperre die ``source``-Zeile exklusiv; ``True`` nur ohne span-Zeile.
+    """Sperre die ``source``-Zeile exklusiv; ``True`` nur ohne span-Zeile und
+    nur für attestierte Quellen (``source_archive``-Zeile vorhanden, ADR-0009,
+    #126).
 
     ``SELECT … FOR UPDATE`` löst keinen UPDATE-Trigger aus (der Append-only-
-    Trigger bleibt unberührt). Die Prüfung „existiert eine span-Zeile?“ läuft in
-    derselben Transaktion nach der Sperre. Kein Commit, kein Rollback.
+    Trigger bleibt unberührt). Die Prüfungen „ist die Quelle attestiert?“ und
+    „existiert eine span-Zeile?“ laufen in derselben Transaktion nach der
+    Sperre. Kein Commit, kein Rollback.
     """
     await session.execute(select(Source.id).where(Source.id == source_id).with_for_update())
+    attested = await session.scalar(
+        select(SourceArchive.id).where(SourceArchive.source_id == source_id).limit(1)
+    )
+    if attested is None:
+        return False
     has = await session.scalar(select(Span.id).where(Span.source_id == source_id).limit(1))
     return has is None

@@ -103,10 +103,13 @@ def _spanless(
 
 
 def _session() -> AsyncMock:
-    """AsyncSession-Fake: keine span-Zeile (scalar → None); ``add`` synchron,
+    """AsyncSession-Fake: attestierte Quelle ohne span-Zeile (#126: Attestierung
+    vorausgesetzt), aufrufsequenzielle scalar-Ergebnisse; ``add`` synchron,
     damit keine dangling Coroutine entsteht."""
     session = AsyncMock()
-    session.scalar = AsyncMock(return_value=None)
+    # Reihenfolge: source_archive (Zeile vorhanden) → span (keine) → speaker →
+    # mandate (jeweils get-or-create in write_spans).
+    session.scalar = AsyncMock(side_effect=[UUID(int=99), None, None, None])
     session.add = MagicMock()
     return session
 

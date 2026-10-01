@@ -214,7 +214,8 @@ async def test_archive_total_failure_no_insert() -> None:
 
 @pytest.mark.asyncio
 async def test_normalize_and_parse_called_phase1() -> None:
-    """Phase-1 (#42): Happy-Path ruft normalize genau vor dem Insert und parse danach."""
+    """Phase-1 (#42/#126): Happy-Path ruft normalize genau einmal vor dem Insert;
+    parse wird nicht mehr gerufen (Spans nur per reparse nach attest, ADR-0009)."""
     order: list[str] = []
     test_hash = "c" * 64
     test_uuid = uuid4()
@@ -256,10 +257,11 @@ async def test_normalize_and_parse_called_phase1() -> None:
                         ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
                     )
 
-    # Phase-1: normalize (liefert "") + parse (liefert []) werden je einmal aufgerufen;
-    # da parse [] liefert, entstehen keine Spans (Insert-Reihenfolge unverändert).
+    # Phase-1: normalize (liefert "") wird genau einmal vor dem Insert aufgerufen
+    # (Text einfrieren, Option A). #126: parse wird NICHT mehr gerufen — Spans
+    # entstehen nur per reparse nach attest (ADR-0009).
     assert adapter.normalize_calls == 1
-    assert adapter.parse_calls == 1
+    assert adapter.parse_calls == 0
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,12 @@
-"""Ingest-Pipeline (Phase 1): fetch→hash→dedup→archiv→WORM→insert source→spans.
+"""Ingest-Pipeline (Phase 1): fetch→hash→dedup→archiv→WORM→insert source.
 
 Erzwingt die Reihenfolge (Provenienz vor Verarbeitung, R-CORE-02). ``normalize``
 läuft VOR dem source-Insert und friert ``source.normalized_text`` ein (Option A,
 #42) — die Span-Offsets zeigen damit versions-robust in den gespeicherten Text
 (Grundlage Anti-Halluzination, R-DATA-06). Parsing-Fehler dürfen die Provenienz
 nie blockieren (AC6): die source wird auch bei kaputtem PDF gesichert.
+Spans entstehen seit #126 nicht mehr beim Ingest — nur per ``reparse`` nach
+``attest`` (ADR-0009).
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from wortlaut.archive.archiver import Archiver, archive_all
 from wortlaut.evidence.hashing import content_hash
 from wortlaut.ingest.adapter import IngestAdapter, RawSource, SourceRef
-from wortlaut.pipeline.spans import write_spans
 from wortlaut.store.sources import NewSource, insert_source, source_exists
 from wortlaut.store.worm import WormStore
 
@@ -53,7 +54,8 @@ async def ingest_source(
     session: AsyncSession,
     rights_basis: str,
 ) -> IngestOutcome:
-    """Bringt eine Quelle in den Ledger und erzeugt ihre Spans (Provenienz zuerst)."""
+    """Bringt eine Quelle in den Ledger (Provenienz zuerst); Spans nur per
+    ``reparse`` nach ``attest`` (ADR-0009, #126)."""
     # 1. fetch · 2. hash über Rohbytes (R-DATA-02) · 3. dedup
     raw = await deps.adapter.fetch(ref)
     h = content_hash(raw.raw_bytes)
@@ -105,22 +107,15 @@ async def ingest_source(
             return IngestOutcome("skipped_duplicate", None, h)
         raise
 
-    # 9. Spans nur, wenn ein kanonischer Text existiert (sonst source-only, AC6).
-    #    Soft-Failures (z.B. archive.today) werden trotzdem nach oben gereicht.
-    span_count = 0
-    if normalized is not None:
-        span_count = await write_spans(
-            session,
-            adapter=deps.adapter,
-            raw=raw,
-            normalized=normalized,
-            source_id=source_id,
-        )
+    # Spans entstehen seit #126 nicht mehr beim Ingest: erst ``attest``, dann
+    # ``reparse`` (ADR-0009). ``span_count`` bleibt Feld und ist immer 0, damit
+    # die Summary-Zeile ihr Format behält. Soft-Failures (z.B. archive.today)
+    # werden trotzdem nach oben gereicht.
     return IngestOutcome(
         "inserted",
         source_id,
         h,
-        span_count,
+        0,
         tuple(f.label() for f in res.failures.values()),
     )
 

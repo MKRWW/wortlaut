@@ -121,37 +121,18 @@ irreführende Fehlerliste erzeugen. Die Schlüssel entstehen unter
 `https://archive.org/account/s3.php`; ein Konto genügt, sie sind kostenlos. Nur
 `--dry-run` kommt ohne aus.
 
-Ingest und Zeitstempel laufen als einmalige Kommandos, nicht als Dienst:
+Die Läufe folgen einer festen Reihenfolge — **`ingest` → `timestamp` →
+`attest` → `reparse`** — und laufen als einmalige Kommandos, nicht als Dienst:
 
 ```
 docker compose --env-file /srv/wortlaut/.env -f compose.yml \
   run --rm api python -m wortlaut ingest --since 2024-01-01 --limit 5
-
-docker compose --env-file /srv/wortlaut/.env -f compose.yml \
-  run --rm api python -m wortlaut timestamp
 ```
 
-Neben dem Ingest gibt es den Span-Nachzug: `reparse` erzeugt Spans für Quellen,
-die noch keine haben (etwa nach einer Parser-Korrektur), arbeitet ohne Netz und
-fasst Quellen mit Spans nie an. Erst `--dry-run`:
-
-```
-docker compose --env-file /srv/wortlaut/.env -f compose.yml \
-  run --rm api python -m wortlaut reparse --dry-run
-```
-
-Dazu kommt die Attestierung: `attest` prüft, ob der Internet Archive für jede
-Quelle einen Snapshot derselben URL mit denselben Bytes hat, und hält das in
-der append-only Tabelle `source_archive` fest. Der Lauf liest nur — er löst
-keine Captures aus und braucht keine Zugangsdaten. Neue Quellen sind anfangs
-oft `snapshot_unavailable` (frische Captures sind nicht sofort exakt abrufbar)
-— ein späterer Lauf holt das nach. **Exit 4** heißt: die Snapshot-Bytes weichen
-vom Ledger-Hash ab — die Quelle muss geprüft werden. Erst `--dry-run`:
-
-```
-docker compose --env-file /srv/wortlaut/.env -f compose.yml \
-  run --rm api python -m wortlaut attest --dry-run
-```
+**`ingest` erzeugt keine Spans mehr** — es erfasst nur noch den Hash, das
+WORM-Objekt und den eingefrorenen Text. `spans_total` in der `ingest`-Zeile ist
+deshalb immer 0. Neue Zitate erscheinen erst nach `attest` und `reparse`
+(ADR-0009).
 
 **Immer erst mit kleinem `--limit`.** Erst wenn ein solcher Lauf `archive_failed=0`
 meldet, lohnt der volle Durchgang. Der Pre-Flight-Check prüft vorab, ob die
@@ -164,6 +145,37 @@ Probe-URL ihr Limit erreicht, dauerhaft rot — ohne dass mit dem Dienst etwas w
 Rechnen Sie mit **rund einer halben Minute pro Quelle**. Save Page Now nimmt einen
 Auftrag nur entgegen und meldet den Abschluss später; der Lauf wartet darauf, weil die
 Snapshot-URL erst dann feststeht.
+
+```
+docker compose --env-file /srv/wortlaut/.env -f compose.yml \
+  run --rm api python -m wortlaut timestamp
+```
+
+Dann die Attestierung: `attest` prüft, ob der Internet Archive für jede
+Quelle einen Snapshot derselben URL mit denselben Bytes hat, und hält das in
+der append-only Tabelle `source_archive` fest. Der Lauf liest nur — er löst
+keine Captures aus und braucht keine Zugangsdaten. Neue Quellen sind anfangs
+oft `snapshot_unavailable` (frische Captures sind nicht sofort exakt abrufbar)
+— ein späterer Lauf holt das nach. **Exit 4** heißt: die Snapshot-Bytes weichen
+vom Ledger-Hash ab — die Quelle muss geprüft werden. Erst `--dry-run`:
+
+```
+docker compose --env-file /srv/wortlaut/.env -f compose.yml \
+  run --rm api python -m wortlaut attest --dry-run
+```
+
+Zum Schluss der Span-Nachzug: `reparse` erzeugt die Spans für attestierte
+Quellen, die noch keine haben (etwa nach einer Parser-Korrektur), arbeitet
+ohne Netz und fasst Quellen mit Spans nie an. Erst `--dry-run`:
+
+```
+docker compose --env-file /srv/wortlaut/.env -f compose.yml \
+  run --rm api python -m wortlaut reparse --dry-run
+```
+
+**Vor dem Ausrollen dieser Version muss `attest` gelaufen sein.** Migration
+`0006` verweigert das Upgrade, solange Spans zu unattestierten Quellen existieren
+— die Meldung nennt den Schritt, der vorher zu fahren ist.
 
 ## Logs
 
