@@ -1,9 +1,10 @@
 # ADR-0009: Pflicht-Anker — Erfassen, Verarbeiten und Zitieren werden getrennt
 
-- **Status:** Proposed (2026-08-28) — Annahme durch den Stakeholder steht aus
+- **Status:** Proposed (2026-08-28, überarbeitet 2026-10-01) — Annahme durch den Stakeholder steht aus
 - **Kontext-Issue:** [#113](https://github.com/MKRWW/wortlaut/issues/113) · Auslöser: [#114](https://github.com/MKRWW/wortlaut/issues/114)
 - **Berührt:** R-CORE-02 (Wortlaut **unverändert**, Umsetzung ändert sich), R-DATA-01/02, R-PROC-04
-- **Baut auf:** [ADR-0008](0008-rfc3161-timestamping.md) (Eigenschaft B), #73, #74 (verworfen), #76, #78 (geparkt)
+- **Baut auf:** [ADR-0008](0008-rfc3161-timestamping.md) (Eigenschaft B), #73, #74 (verworfen), #76, #78 (geparkt), #108
+- **Bezug:** #118 (`reparse` als zweiter Weg zu Spans), #122 (Nachfolger des WORM-Speichers)
 
 ## Kontext
 
@@ -31,14 +32,21 @@ Zum zweiten Mal steht die Erfassung wegen **eines** Anbieters still:
 - **#114 (2026-08-28, gemessen):** Der Internet Archive erhält für `bundestag.de` **404**, während
   unser Server für dieselben URLs **200** bekommt — auf `dserver` *und* auf `www.bundestag.de`.
   Dieselbe URL wurde am Vortag noch erfolgreich archiviert (`http_status: 200`).
-  `robots.txt` schließt Crawler **nicht** aus. Ursache offen (Sperre · ratenbasiert · IA-seitig).
+  `robots.txt` schließt Crawler **nicht** aus.
 
-Der Unterschied zu #73: Damals war der **Archivdienst** aus. Jetzt ist der Dienst gesund und
-erreicht nur **unsere Quelle** nicht. Gegen diesen Fall hilft weder ein Retry noch ein zweiter
+  *Nachtrag 2026-10-01:* Die Ursache ist inzwischen eingegrenzt — keine Sperre durch
+  bundestag.de, sondern eine vorübergehende Störung allein des direkten Save-Page-Now-Pfads;
+  die eigenen Crawler des Internet Archive holten dieselben Hosts zur selben Zeit mit 200. Ab dem
+  07.09. gelangen direkte Captures wieder, ein einzelner Lauf am 01.10. ging sofort durch. **Der
+  Stillstand dauerte trotzdem rund zehn Tage**, und in dieser Zeit wäre jede neue Quelle
+  verworfen worden. Das Argument dieser ADR hängt nicht an der Ursache, sondern an der Dauer.
+
+Der Unterschied zu #73: Damals war der **Archivdienst** aus. Bei #114 war der Dienst gesund und
+erreichte nur **unsere Quelle** nicht. Gegen diesen Fall hilft weder ein Retry noch ein zweiter
 Zeitstempel — und es ist der Normalfall, mit dem ein Archiv rechnen muss, das fremde Server
 weder kontrolliert noch beeinflusst.
 
-### Zwei strukturelle Befunde aus dem Code
+### Drei strukturelle Befunde aus dem Code
 
 **1. Die Datenbank und die Pipeline sind sich uneinig.** `migrations/0002` erzwingt
 
@@ -58,6 +66,14 @@ zwangsläufig vor dem Insert vorliegen. Das Gate ist also eine Folge der Ablagef
 #76 hat für dasselbe Problem bereits ein Hausmuster: Der Zeitstempel liegt in einer **eigenen
 append-only Tabelle** `source_timestamp`; „pending" ist **abgeleitet** (keine Zeile), es gibt
 kein Status-Flag und kein UPDATE. Genau dieses Muster fehlt der Archivierung.
+
+**3. Niemand prüft, ob der Snapshot unsere Bytes enthält.** Weder der Archiv-Layer noch `/verify`
+vergleichen die Bytes im Wayback-Snapshot mit `content_hash`. Gespeichert wird die Snapshot-URL,
+die der Dienst zurückmeldet — mehr nicht. Heute fällt das kaum ins Gewicht, weil der Capture
+Sekunden nach unserem Abruf ausgelöst wird; dass die Quelle dazwischen andere Bytes ausliefert,
+ist unwahrscheinlich. **Mit einer späteren Attestierung, die diese ADR gerade ermöglicht, ändert
+sich das:** Zwischen Erfassung und Capture können Tage liegen, und eine korrigierte Fassung
+desselben Dokuments unter derselben URL ist bei Parlamentsdokumenten kein exotischer Fall.
 
 ### Warum #74 verworfen wurde — und was sich geändert hat
 
@@ -102,6 +118,22 @@ Mutation einer bestehenden Zeile.
 
 Damit wird die Nach-Attestierung überhaupt erst möglich, ohne die Append-only-Garantie anzutasten.
 Ein eigener, wiederholbarer **Archiv-Pass** holt offene Quellen nach — genau wie der Stempel-Pass.
+
+**Eine Zeile entsteht nur bei nachgewiesener Byte-Gleichheit.** Bevor `source_archive` eine
+Attestierung festhält, holt der Archiv-Pass die **Rohbytes des Snapshots** (Wayback:
+`id_`-Playback, ohne Umschreibung durch die Wayback-Oberfläche) und rechnet ihren Hash gegen
+`content_hash`. Nur bei Gleichheit wird geschrieben. Eine Abweichung attestiert **nichts**: Die
+Quelle bleibt unattestiert, und die Abweichung wird gezählt und ausgewiesen, nicht verschluckt —
+sie ist ein Befund über die Quelle, kein technischer Fehler. Ohne diese Prüfung wäre
+Eigenschaft A nur behauptet: Der Snapshot bezeugte *irgendeine* Fassung unter der URL, nicht
+die, die wir gehasht haben und zitieren.
+
+Die Prüfung passt zum verzögerten Pass: Ein frischer Snapshot ist nicht sofort abrufbar, die
+konstruierte URL zeigt anfangs auf einen älteren Stand (#108). Ein sofortiger Abgleich im
+Ingest wäre deshalb unzuverlässig, ein späterer ist es nicht.
+
+Die Tabelle referenziert Quelle und Snapshot, **nicht** eine S3-Version im eigenen Speicher —
+sonst erbte sie das Umzugsproblem, das #122 für die WORM-Refs klären muss.
 
 ### 3. A bleibt Pflicht und wird von *einem* Archivar aus einer expliziten Registry erfüllt
 
@@ -155,6 +187,8 @@ Migration und Umgang mit den bereits erfassten Quellen.
 - (+) Die Uneinigkeit zwischen `chk_archive` und der Pipeline verschwindet: Es gibt genau eine
   Stelle, die A definiert.
 - (+) Ein zweiter Archivar (#78) wird zu einer additiven Registry-Zeile statt zu einem Umbau.
+- (+) **Eigenschaft A wird erstmals tatsächlich geprüft** statt nur behauptet: Die Byte-Gleichheit
+  zwischen Snapshot und `content_hash` ist Bedingung jeder Attestierung (§2).
 - (−) **Eine beweisrelevante Schema-Invariante ändert sich.** `chk_archive` entfällt in seiner
   heutigen Form; die Garantie muss an der Zitierfähigkeits-Grenze **gleichwertig** wieder
   entstehen — sonst tauschen wir eine DB-Zusicherung gegen Anwendungslogik ein, und genau davor
@@ -166,7 +200,16 @@ Migration und Umgang mit den bereits erfassten Quellen.
   Anfang" zu senken. Das ist der Punkt, an dem das Projekt seinen Wert verliert. Eine Änderung der
   Schwelle ist **nur per neuer ADR mit Stakeholder-Approval** zulässig.
 - (−) Die bereits erfassten Quellen brauchen eine Migration ihrer Anker aus der Spalte in die neue
-  Tabelle — verlustfrei, aber nicht trivial.
+  Tabelle — verlustfrei, aber nicht trivial. **Ihre Snapshots sind nie gegen `content_hash`
+  geprüft worden.** Die Migration darf sie deshalb nicht ungeprüft als attestiert übernehmen; der
+  Archiv-Pass prüft sie wie jede neue Quelle. Fällt die Prüfung für eine bereits zitierbare
+  Quelle durch, ist das ein Befund, der vor dem Umstellen geklärt werden muss — nicht danach.
+- (−) **Jeder Weg zu Spans muss an der Attestierung hängen, nicht nur der Ingest.** Seit #118 gibt
+  es mit `reparse` einen zweiten: Er erzeugt Spans für jede Quelle ohne Spans. Ohne Anpassung
+  wäre er nach dieser ADR das Schlupfloch, über das eine unattestierte Quelle doch zitierbar wird.
+  Die Umsetzung bindet die Auswahl von `reparse` an die Attestierung; die Ersatz-Zusicherung für
+  `chk_archive` muss so gebaut sein, dass sie **jeden** Insert in `span` erfasst, gleich aus
+  welchem Pfad.
 - (−) Mehr bewegliche Teile: ein zusätzlicher Pass, eine zusätzliche Tabelle, ein zusätzlicher
   Zustand im Betrieb.
 
