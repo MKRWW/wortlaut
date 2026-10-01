@@ -6,11 +6,13 @@ Container — daher nur unter dem `integration`-Marker (AC5).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 
 if TYPE_CHECKING:
     from wortlaut.store.worm import MinioWormStore
@@ -84,3 +86,21 @@ async def worm_store() -> AsyncIterator[MinioWormStore]:
         store = MinioWormStore(settings)
         await store.ensure_bucket()
         yield store
+
+
+_ATTEST_SQL = text(
+    "INSERT INTO source_archive "
+    "(source_id, archiver, snapshot_url, snapshot_at, verified_sha256) "
+    "SELECT id, 'wayback', 'https://web.archive.org/web/20260101000000/' || origin_url, "
+    "now(), content_hash FROM source WHERE id = CAST(:sid AS uuid)"
+)
+
+
+@pytest.fixture
+def seed_attestation() -> Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]]:
+    """Testdaten: trägt für eine Quelle eine gültige Attestierung ein (Hash = content_hash)."""
+
+    async def _seed(executor: AsyncSession | AsyncConnection, source_id: UUID | str) -> None:
+        await executor.execute(_ATTEST_SQL, {"sid": str(source_id)})
+
+    return _seed

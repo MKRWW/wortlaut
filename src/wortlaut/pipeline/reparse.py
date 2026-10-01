@@ -1,5 +1,8 @@
 """Span-Nachzug: Spans für Quellen ohne Spans aus dem gespeicherten Text (Spec 0118).
 
+Seit #126 ist ``reparse`` der reguläre Weg zu Spans: ``ingest`` erzeugt keine
+mehr, und ``reparse`` wählt nur noch Quellen mit Attestierung (ADR-0009).
+
 Schließt die Lücke von #93/AC4: eine Quelle, die **vor** einer Parser-Korrektur
 erfasst wurde, hat ``normalized_text``, aber keine Spans; ein erneuter ``ingest``
 meldet ``skipped_duplicate``, bevor irgendetwas geparst wird. Dieser Pass lädt

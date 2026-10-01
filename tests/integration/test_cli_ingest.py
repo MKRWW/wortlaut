@@ -2,7 +2,8 @@
 
 Archiver + DIP-Adapter sind Fakes (R-TEST-03 — kein Live-Netz); Postgres und MinIO
 sind echte Testcontainer. Prueft die CLI-Verdrahtung: Bootstrap (migrate + bucket +
-adapter-seed) -> discover -> ingest_source -> source + span + WORM + verify.
+adapter-seed) -> discover -> ingest_source -> source (ohne Spans, #126) + WORM +
+verify.
 """
 
 from __future__ import annotations
@@ -145,7 +146,7 @@ async def test_end_to_end_single_source(
     minio_config: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC9: CLI ingest -> 1 source + >=1 span, verify=ok, WORM haelt die Rohbytes."""
+    """AC9: CLI ingest -> 1 source + 0 Spans (#126), verify=ok, WORM haelt die Rohbytes."""
     _set_env(monkeypatch, fresh_pg_dsn, minio_config)
 
     with (
@@ -178,7 +179,8 @@ async def test_end_to_end_single_source(
                 {"s": source_id},
             )
             assert span_count is not None
-            assert int(span_count) >= 1
+            # #126: ingest erzeugt keine Spans mehr (ADR-0009)
+            assert int(span_count) == 0
 
             report = await verify_source(source_id, session=session, worm=worm)
             assert report.ok

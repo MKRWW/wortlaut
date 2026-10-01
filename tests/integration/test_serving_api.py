@@ -8,7 +8,7 @@ Frische DB je Test (fresh_pg_dsn).
 from __future__ import annotations
 
 import hashlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from uuid import UUID
@@ -16,16 +16,19 @@ from uuid import UUID
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
 from wortlaut.evidence.hashing import span_hash
 from wortlaut.serving.app import create_app
 from wortlaut.store.migrations import upgrade_head
+from wortlaut.store.models import Mandate, Source, Span, SpanState, Speaker
 from wortlaut.store.sources import NewSource, insert_source
 from wortlaut.store.spans import NewSpan, insert_span
 from wortlaut.store.worm import WormStore
 
 pytestmark = pytest.mark.integration
+
+SeedAttestation = Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]]
 
 _LOCATOR_TOP3: dict[str, object] = {
     "protokoll": "20/88",
@@ -156,12 +159,15 @@ async def _span(session: AsyncSession, spec: _SpanSpec) -> UUID:
     return span_id
 
 
-async def _seed(session: AsyncSession, worm: WormStore) -> dict[str, UUID]:
+async def _seed(session: AsyncSession, worm: WormStore, seed: SeedAttestation) -> dict[str, UUID]:
     # Quelle A: echte Rohbytes im WORM, content_hash passt (verify → ok)
     raw_a = b"quelle A rohbytes fuer verify"
     hash_a = hashlib.sha256(raw_a).hexdigest()
     ref_a = await worm.put(hash_a, raw_a, content_type="application/pdf")
     src_a = await _source(session, hash_a, ref_a, _NORMALIZED_A)
+    # ADR-0009 (#126): ohne Attestierung wird nichts ausgeliefert.
+    await seed(session, src_a)
+    await session.commit()
 
     mm = await _speaker(session, "Dr. Max Mustermann")
     mm_m = await _mandate(session, mm, "AfD")
@@ -212,6 +218,8 @@ async def _seed(session: AsyncSession, worm: WormStore) -> dict[str, UUID]:
     hash_b = hashlib.sha256(b"ORIGINAL B").hexdigest()
     ref_b = await worm.put(hash_b, b"MANIPULIERT B", content_type="application/pdf")
     src_b = await _source(session, hash_b, ref_b, _NORMALIZED_B)
+    await seed(session, src_b)
+    await session.commit()
     ids["vb"] = await _span(
         session,
         _SpanSpec(src_b, mm, mm_m, _VB, _NORMALIZED_B, _VB, day5, _LOCATOR_TOP3),
@@ -220,10 +228,12 @@ async def _seed(session: AsyncSession, worm: WormStore) -> dict[str, UUID]:
 
 
 async def _client(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm: WormStore,
+    seed: SeedAttestation,
 ) -> tuple[AsyncClient, dict[str, UUID]]:
     async with fresh_sessions() as session:
-        ids = await _seed(session, worm)
+        ids = await _seed(session, worm, seed)
     transport = ASGITransport(
         app=create_app(fresh_sessions, worm, allowed_origins=["https://wortlaut.io"])
     )
@@ -231,9 +241,11 @@ async def _client(
 
 
 async def test_search_returns_full_span_with_fields(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm_store: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:  # AC1 + AC3
-    client, ids = await _client(fresh_sessions, worm_store)
+    client, ids = await _client(fresh_sessions, worm_store, seed_attestation)
     async with client:
         resp = await client.get("/v1/search", params={"q": "Digitalisierung"})
     assert resp.status_code == 200
@@ -248,9 +260,11 @@ async def test_search_returns_full_span_with_fields(
 
 
 async def test_machine_redacted_tampered_never_served(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm_store: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:  # AC2 + AC9
-    client, ids = await _client(fresh_sessions, worm_store)
+    client, ids = await _client(fresh_sessions, worm_store, seed_attestation)
     async with client:
         search = (await client.get("/v1/search", params={"q": "Beitrag"})).json()
         served = {r["span_id"] for r in search["results"]}
@@ -262,9 +276,11 @@ async def test_machine_redacted_tampered_never_served(
 
 
 async def test_no_internal_fields_leak(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm_store: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:  # AC6
-    client, ids = await _client(fresh_sessions, worm_store)
+    client, ids = await _client(fresh_sessions, worm_store, seed_attestation)
     async with client:
         raw = (await client.get(f"/v1/spans/{ids['v1']}")).text
     assert "raw_bytes_ref" not in raw
@@ -273,9 +289,11 @@ async def test_no_internal_fields_leak(
 
 
 async def test_span_detail_has_context_bundle(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm_store: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:  # AC4
-    client, ids = await _client(fresh_sessions, worm_store)
+    client, ids = await _client(fresh_sessions, worm_store, seed_attestation)
     async with client:
         detail = (await client.get(f"/v1/spans/{ids['v1']}")).json()
     top3_texts = {c["verbatim_text"] for c in detail["context"]}
@@ -289,9 +307,11 @@ async def test_span_detail_has_context_bundle(
 
 
 async def test_filters_party_and_date(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm_store: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:  # AC8
-    client, _ = await _client(fresh_sessions, worm_store)
+    client, _ = await _client(fresh_sessions, worm_store, seed_attestation)
     async with client:
         afd = (await client.get("/v1/search", params={"q": "Punkt", "party": "AfD"})).json()
         assert all(r["speaker"]["party"] == "AfD" for r in afd["results"])
@@ -300,9 +320,11 @@ async def test_filters_party_and_date(
 
 
 async def test_verify_ok_and_hash_mismatch(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm_store: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:  # AC5
-    client, ids = await _client(fresh_sessions, worm_store)
+    client, ids = await _client(fresh_sessions, worm_store, seed_attestation)
     async with client:
         ok = (await client.get(f"/v1/spans/{ids['v1']}/verify")).json()
         assert ok["ok"] is True
@@ -314,9 +336,11 @@ async def test_verify_ok_and_hash_mismatch(
 
 
 async def test_source_evidence_no_internals(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm_store: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:  # Beleg-Endpoint, keine WORM-Interna
-    client, ids = await _client(fresh_sessions, worm_store)
+    client, ids = await _client(fresh_sessions, worm_store, seed_attestation)
     async with client:
         resp = await client.get(f"/v1/sources/{ids['src_a']}")
     assert resp.status_code == 200
@@ -329,11 +353,102 @@ async def test_source_evidence_no_internals(
 
 
 async def test_unknown_ids_return_404(
-    fresh_sessions: async_sessionmaker[AsyncSession], worm_store: WormStore
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
 ) -> None:
-    client, _ = await _client(fresh_sessions, worm_store)
+    client, _ = await _client(fresh_sessions, worm_store, seed_attestation)
     missing = "00000000-0000-0000-0000-000000000000"
     async with client:
         assert (await client.get(f"/v1/spans/{missing}")).status_code == 404
         assert (await client.get(f"/v1/spans/{missing}/verify")).status_code == 404
         assert (await client.get(f"/v1/sources/{missing}")).status_code == 404
+
+
+# ── AC7 (#126): unattestierte Quellen werden nie ausgeliefert ─────────────
+
+
+async def test_unattested_source_never_served(
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
+) -> None:
+    """AC7: Quelle C ist NICHT attestiert — ihr Span-Insert gelingt nur, weil
+    der Test in einer eigenen Sitzung ``session_replication_role = replica``
+    setzt (Trigger-Umgehung = simulierter Altbestand/Fehlkonfiguration;
+    ausschließlich in diesem Test erlaubt). Suche, Span-Detail und Kontext
+    liefern nur Spans der attestierten Quelle; der Beleg-Endpunkt liefert
+    für die unattestierte Quelle 404."""
+    client, ids = await _client(fresh_sessions, worm_store, seed_attestation)
+
+    v_c = "Zur Wirtschaft gibt es noch einen Punkt ohne Attestierung."
+    hash_c = hashlib.sha256(v_c.encode("utf-8")).hexdigest()
+    day5 = date(2024, 7, 5)
+    async with fresh_sessions() as session:
+        await session.execute(text("SET LOCAL session_replication_role = replica"))
+        src_c = Source(
+            source_type="plenarprotokoll",
+            rights_basis="amtliches_werk_p5",
+            adapter_name="dip-api",
+            adapter_version="1.0.0",
+            origin_url="https://dserver.bundestag.de/btp/20/2008801/2008801.pdf",
+            content_hash=hash_c,
+            byte_size=len(v_c.encode("utf-8")),
+            mime_type="text/plain",
+            retrieved_at=datetime(2026, 1, 1, tzinfo=UTC),
+            raw_bytes_ref="worm://quelle-c",
+            archive_wayback="https://web.archive.org/snap-c",
+            normalized_text=v_c,
+        )
+        session.add(src_c)
+        await session.flush()
+        spk_c = Speaker(full_name="Dr. Unbezeugt")
+        session.add(spk_c)
+        await session.flush()
+        man_c = Mandate(
+            speaker_id=spk_c.id,
+            role="MdB",
+            parliament="bundestag",
+            party="X",
+            active_from=date(2021, 10, 26),
+        )
+        session.add(man_c)
+        await session.flush()
+        span_c = Span(
+            source_id=src_c.id,
+            speaker_id=spk_c.id,
+            mandate_id=man_c.id,
+            verbatim_text=v_c,
+            text_start=0,
+            text_end=len(v_c),
+            spoken_at=day5,
+            locator=_LOCATOR_TOP3,
+            permalink="https://dserver.bundestag.de/btp/20/2008801/2008801.pdf#p1",
+            span_hash=span_hash(v_c),
+        )
+        session.add(span_c)
+        await session.flush()
+        session.add(SpanState(span_id=span_c.id, verification="official", visibility="public"))
+        await session.flush()
+        src_c_id = src_c.id
+        span_c_id = span_c.id
+        await session.commit()
+
+    async with client:
+        # Suche: v_c enthält „Punkt" wie v3 (Quelle A) — aber C wird nie ausgeliefert.
+        search = (await client.get("/v1/search", params={"q": "Punkt"})).json()
+        assert search["total"] == 1
+        served = {r["span_id"] for r in search["results"]}
+        assert served == {str(ids["v3"])}
+
+        # Span-Detail für den unattestierten Span: 404.
+        assert (await client.get(f"/v1/spans/{span_c_id}")).status_code == 404
+
+        # Kontext: enthält nur Spans der attestierten Quelle.
+        detail = (await client.get(f"/v1/spans/{ids['v3']}")).json()
+        context_ids = {c["span_id"] for c in detail["context"]}
+        assert str(span_c_id) not in context_ids
+        assert str(ids["v3"]) in context_ids
+
+        # Beleg-Endpunkt: unattestierte Quelle → 404 (kein Schlupfloch, ADR-0009).
+        assert (await client.get(f"/v1/sources/{src_c_id}")).status_code == 404

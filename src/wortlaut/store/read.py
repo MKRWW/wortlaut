@@ -19,14 +19,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # Harter Server-Filter (nicht optional): nur zitierfähig + öffentlich + nicht
 # redigiert + geklärte Rechte, UND Anti-Halluzination (Slice == verbatim gegen den
-# gespeicherten normalized_text; NULL/Manipulation ⇒ Zeile fällt raus, fail-safe).
+# gespeicherten normalized_text; NULL/Manipulation ⇒ Zeile fällt raus, fail-safe),
+# UND die Quelle ist fremdbezeugt (ADR-0009).
 _PUBLIC_FILTER = (
     "st.verification IN ('official','human_verified') "
     "AND st.redacted = false "
     "AND st.visibility = 'public' "
     "AND src.rights_basis <> 'ungeklaert' "
     "AND substr(src.normalized_text, sp.text_start + 1, sp.text_end - sp.text_start) "
-    "= sp.verbatim_text"
+    "= sp.verbatim_text "
+    "AND EXISTS (SELECT 1 FROM source_archive sa WHERE sa.source_id = src.id)"
 )
 
 _FROM_JOINS = (
@@ -74,10 +76,13 @@ _CONTEXT_SQL = text(
     "AND sp.locator->>'tagesordnungspunkt' IS NOT DISTINCT FROM :top "
     "ORDER BY sp.text_start LIMIT :limit"
 )
+# Quellen-Beleg: dieselbe Attestierungsgrenze wie der Span-Filter — ein
+# unattestierter Beleg wäre ein Schlupfloch (ADR-0009, Konsequenzen).
 _SOURCE_SQL = text(
     "SELECT id AS source_id, source_type, origin_url, content_hash, rights_basis, "
     "archive_wayback, archive_today, byte_size, mime_type, retrieved_at "
-    "FROM source WHERE id = CAST(:source_id AS uuid) AND rights_basis <> 'ungeklaert'"
+    "FROM source WHERE id = CAST(:source_id AS uuid) AND rights_basis <> 'ungeklaert' "
+    "AND EXISTS (SELECT 1 FROM source_archive sa WHERE sa.source_id = source.id)"
 )
 
 CONTEXT_MAX = 50  # Deckel gegen riesige TOPs (kein silent cap: Detail bleibt vollständig ladbar)

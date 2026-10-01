@@ -9,13 +9,14 @@ Isolation: jede Prüfung in einer zurückgerollten Transaktion.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, date, datetime
+from uuid import UUID
 
 import pytest
 from sqlalchemy import TextClause, text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from wortlaut.store.db import create_async_engine_from
 from wortlaut.store.migrations import downgrade_to, upgrade_head
@@ -62,6 +63,7 @@ _SPAN_STATE_INSERT = text(
 )
 
 _ADAPTER = {"name": "dip-api", "version": "1.0.0", "trust_level": "verified_primary"}
+_SPAN_HASH = "c" * 64
 
 
 def _source(**overrides: object) -> dict[str, object]:
@@ -170,8 +172,15 @@ async def _expect_violation(
 # -- Seed bis span (vollständige Kette) --
 
 
-async def seed_full_chain(conn: AsyncConnection) -> dict[str, str]:
-    """Legt adapter → source → speaker → mandate → span an und gibt alle IDs zurück."""
+async def seed_full_chain(
+    conn: AsyncConnection,
+    seed_attestation: Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]],
+) -> dict[str, str]:
+    """Legt adapter → source → speaker → mandate → span an und gibt alle IDs zurück.
+
+    Die Quelle wird attestiert (ADR-0009, #126) — ohne ``source_archive``-Zeile
+    verweigert der Trigger den Span-Insert.
+    """
     await _seed_adapter(conn)
 
     # source: ID ermitteln via content_hash
@@ -183,6 +192,7 @@ async def seed_full_chain(conn: AsyncConnection) -> dict[str, str]:
     )
     source_id = str(result)
 
+    await seed_attestation(conn, source_id)
     speaker_id = await _seed_speaker(conn)
     mandate_id = await _seed_mandate(conn, speaker_id)
     span_id = await _seed_span(conn, source_id, speaker_id, mandate_id)
@@ -221,27 +231,36 @@ async def test_span_schema_objects_exist(conn: AsyncConnection) -> None:
     assert fts_idx == 1
 
 
-async def test_span_update_forbidden(conn: AsyncConnection) -> None:
+async def test_span_update_forbidden(
+    conn: AsyncConnection,
+    seed_attestation: Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]],
+) -> None:
     # AC2: UPDATE auf span wirft (append-only Trigger).
-    chain = await seed_full_chain(conn)
+    chain = await seed_full_chain(conn, seed_attestation)
     stmt = text("UPDATE span SET permalink = 'x' WHERE id = :id")
     params = {"id": chain["span_id"]}
     with pytest.raises(DBAPIError):
         await conn.execute(stmt, params)
 
 
-async def test_span_delete_forbidden(conn: AsyncConnection) -> None:
+async def test_span_delete_forbidden(
+    conn: AsyncConnection,
+    seed_attestation: Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]],
+) -> None:
     # AC3: DELETE auf span wirft (append-only Trigger).
-    chain = await seed_full_chain(conn)
+    chain = await seed_full_chain(conn, seed_attestation)
     stmt = text("DELETE FROM span WHERE id = :id")
     params = {"id": chain["span_id"]}
     with pytest.raises(DBAPIError):
         await conn.execute(stmt, params)
 
 
-async def test_span_offsets_check(conn: AsyncConnection) -> None:
+async def test_span_offsets_check(
+    conn: AsyncConnection,
+    seed_attestation: Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]],
+) -> None:
     # AC4: text_end <= text_start ⇒ CHECK-Verletzung; 0/10 ⇒ ok.
-    chain = await seed_full_chain(conn)
+    chain = await seed_full_chain(conn, seed_attestation)
     source_id = chain["source_id"]
     speaker_id = chain["speaker_id"]
     mandate_id = chain["mandate_id"]
@@ -264,7 +283,10 @@ async def test_span_offsets_check(conn: AsyncConnection) -> None:
     await _seed_span(conn, source_id, speaker_id, mandate_id, text_start=0, text_end=10)
 
 
-async def test_span_and_state_fk_violations(conn: AsyncConnection) -> None:
+async def test_span_and_state_fk_violations(
+    conn: AsyncConnection,
+    seed_attestation: Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]],
+) -> None:
     # AC5: FK-Verletzungen an allen Nähten; komplette Kette ⇒ ok.
     await _seed_adapter(conn)
     src_params = _source()
@@ -275,7 +297,12 @@ async def test_span_and_state_fk_violations(conn: AsyncConnection) -> None:
     )
     source_id = str(result)
 
-    # span mit erfundener source_id → FK-Verletzung
+    # Quelle attestieren (ADR-0009, #126), damit der Span-Insert den
+    # Attestierungs-Trigger passiert; der span mit erfundener source_id wird
+    # bereits am Attestierungs-Trigger verweigert (ebenfalls DBAPIError).
+    await seed_attestation(conn, source_id)
+
+    # span mit erfundener source_id → Verletzung
     speaker_id = await _seed_speaker(conn)
     mandate_id = await _seed_mandate(conn, speaker_id)
     base_span: dict[str, object] = {
@@ -321,9 +348,12 @@ async def test_span_and_state_fk_violations(conn: AsyncConnection) -> None:
     )
 
 
-async def test_span_fts_generated_and_matches(conn: AsyncConnection) -> None:
+async def test_span_fts_generated_and_matches(
+    conn: AsyncConnection,
+    seed_attestation: Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]],
+) -> None:
     # AC6: fts wird automatisch generiert und ein deutscher Volltext-Match trifft.
-    chain = await seed_full_chain(conn)
+    chain = await seed_full_chain(conn, seed_attestation)
     span_id = chain["span_id"]
 
     # fts IS NOT NULL nach Generierung (Default-Span 'Testtext')
@@ -356,10 +386,13 @@ async def test_span_fts_generated_and_matches(conn: AsyncConnection) -> None:
     assert match_count == 1
 
 
-async def test_span_state_one_to_one_and_enums(conn: AsyncConnection) -> None:
+async def test_span_state_one_to_one_and_enums(
+    conn: AsyncConnection,
+    seed_attestation: Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]],
+) -> None:
     # AC7: Gültiger span_state ok; zweiter für gleiche span_id → UNIQUE;
     # ungültiger Enum-Wert → Fehlschlag.
-    chain = await seed_full_chain(conn)
+    chain = await seed_full_chain(conn, seed_attestation)
     span_id = chain["span_id"]
 
     # Erster span_state → ok
@@ -383,6 +416,40 @@ async def test_span_state_one_to_one_and_enums(conn: AsyncConnection) -> None:
         "visibility": "public",
     }
     await _expect_violation(conn, _SPAN_STATE_INSERT, invalid_enum)
+
+
+async def test_span_requires_attestation(
+    conn: AsyncConnection,
+    seed_attestation: Callable[[AsyncSession | AsyncConnection, UUID | str], Awaitable[None]],
+) -> None:
+    # AC1 (#126): Span-Insert für eine Quelle ohne source_archive-Zeile wird
+    # von der DB verweigert; nach der Attestierung gelingt derselbe Insert.
+    await _seed_adapter(conn)
+    src_params = _source()
+    await conn.execute(_SOURCE_INSERT, src_params)
+    result = await conn.scalar(
+        text("SELECT id FROM source WHERE content_hash = :h"),
+        {"h": src_params["content_hash"]},
+    )
+    source_id = str(result)
+    speaker_id = await _seed_speaker(conn)
+    mandate_id = await _seed_mandate(conn, speaker_id)
+
+    unattested: dict[str, object] = {
+        "source_id": source_id,
+        "speaker_id": speaker_id,
+        "mandate_id": mandate_id,
+        "verbatim_text": "Testtext",
+        "text_start": 0,
+        "text_end": 10,
+        "spoken_at": date(2023, 3, 15),
+        "permalink": "https://example.test/span",
+        "span_hash": _SPAN_HASH,
+    }
+    await _expect_violation(conn, _SPAN_INSERT, unattested)
+
+    await seed_attestation(conn, source_id)
+    await _seed_span(conn, source_id, speaker_id, mandate_id)
 
 
 async def test_migration_0003_downgrade_clean(fresh_pg_dsn: str) -> None:
