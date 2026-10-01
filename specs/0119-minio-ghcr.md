@@ -62,13 +62,19 @@ grün, ohne dass sich am Testverhalten etwas ändert.
 Jeweils nur die eine Zeile `MINIO_IMAGE = "..."` ersetzen durch:
 
 ```python
-MINIO_IMAGE = "ghcr.io/mkrww/minio@sha256:a16cad481969d7ddb6fcd2f1c58284af3d1266190b9bedc3ef0801aeb05a93a9"
+MINIO_IMAGE = (
+    "ghcr.io/mkrww/minio"
+    "@sha256:a16cad481969d7ddb6fcd2f1c58284af3d1266190b9bedc3ef0801aeb05a93a9"
+)
 ```
 
-Direkt darüber einen einzeiligen Kommentar setzen:
+Die Aufteilung ist Pflicht: In einer Zeile waere sie laenger als die erlaubten 100 Zeichen (ruff E501).
+
+Direkt darüber einen zweizeiligen Kommentar setzen:
 
 ```python
-# Unveraenderte Kopie von minio/minio:RELEASE.2025-09-07T16-13-09Z — Upstream nicht mehr abrufbar (#119).
+# Unveraenderte Kopie von minio/minio:RELEASE.2025-09-07T16-13-09Z.
+# Upstream ist nicht mehr abrufbar (#119).
 ```
 
 Steht über der Zeile bereits ein Kommentar zum Image, wird er durch diesen ersetzt.
