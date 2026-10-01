@@ -78,3 +78,14 @@ forbidden_modules =
     wortlaut.serving
     wortlaut.pipeline
     wortlaut.archive
+
+# Spec 0118 §4.4: reparse arbeitet ausschliesslich auf vorhandenen Ledger-Daten. Kein
+# Fremdarchiv, kein Zeitstempeldienst — auch nicht indirekt.
+[importlinter:contract:reparse-ohne-netzdienste]
+name = Reparse importiert weder Archiv- noch Zeitstempel-Layer
+type = forbidden
+source_modules =
+    wortlaut.pipeline.reparse
+forbidden_modules =
+    wortlaut.archive
+    wortlaut.timestamp

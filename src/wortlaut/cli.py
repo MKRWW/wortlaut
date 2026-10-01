@@ -27,11 +27,13 @@ from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
 from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
 from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
+from wortlaut.pipeline.reparse import ReparseOutcome, reparse_source
 from wortlaut.pipeline.timestamp import TimestampOutcome, timestamp_source
 from wortlaut.serving.settings import ApiSettings
 from wortlaut.store.adapters import ensure_ingest_adapter
 from wortlaut.store.db import create_async_engine_from, make_sessionmaker
 from wortlaut.store.migrations import upgrade_head
+from wortlaut.store.reparse import list_sources_without_spans
 from wortlaut.store.settings import DbSettings, WormSettings
 from wortlaut.store.timestamps import list_sources_without_timestamp
 from wortlaut.store.worm import MinioWormStore
@@ -60,19 +62,29 @@ def main(argv: list[str] | None = None) -> int:
     p_timestamp.add_argument("--no-migrate", action="store_true")
     p_timestamp.add_argument("--dry-run", action="store_true")
 
+    p_reparse = subparsers.add_parser("reparse")
+    p_reparse.add_argument("--limit", type=int, default=None)
+    p_reparse.add_argument("--no-migrate", action="store_true")
+    p_reparse.add_argument("--dry-run", action="store_true")
+
     subparsers.add_parser("serve")
 
     args = parser.parse_args(argv)
 
     subcommand = getattr(args, "subcommand", None)
-    if subcommand not in ("ingest", "timestamp", "serve"):
-        print("Fehler: Subcommand 'ingest', 'timestamp' oder 'serve' erforderlich", file=sys.stderr)
+    if subcommand not in ("ingest", "timestamp", "reparse", "serve"):
+        print(
+            "Fehler: Subcommand 'ingest', 'timestamp', 'reparse' oder 'serve' erforderlich",
+            file=sys.stderr,
+        )
         return 2
 
     if subcommand == "ingest":
         return asyncio.run(_run(args))
     if subcommand == "timestamp":
         return asyncio.run(_run_timestamp(args))
+    if subcommand == "reparse":
+        return asyncio.run(_run_reparse(args))
     # uvicorn bringt seinen eigenen Event-Loop mit — kein asyncio.run drumherum.
     return _run_serve()
 
@@ -248,6 +260,64 @@ async def _run_timestamp(args: argparse.Namespace) -> int:
         return 4 if stats.hash_mismatch > 0 else 0
     finally:
         await _aclose_all(stamper.aclose, engine.dispose)
+
+
+async def _run_reparse(args: argparse.Namespace) -> int:
+    """Composition-Root für den Span-Nachzug (Spec 0118 §11).
+
+    Settings → Engine → Adapter → WORM → Pass. Exit: 0 = ok, 2 = Konfiguration,
+    4 = hash_mismatch (Alarm, Muster ``timestamp``), 1 = Fehler bei einer Quelle.
+    Kein Netzzugriff: keine Archiver, kein ``fetch``/``discover`` (AC10).
+    """
+    # 1) Settings aus ENV — Konfiguration ist EIN Block, EIN Rückgabepunkt (Exit 2).
+    try:
+        db_settings = DbSettings()
+        worm_settings = WormSettings()
+        dip_settings = DipSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return 2
+
+    engine = create_async_engine_from(db_settings)
+    sessions = make_sessionmaker(engine)
+    worm = MinioWormStore(worm_settings)
+    adapter = DipPlenarprotokollAdapter(dip_settings)
+
+    try:
+        # 2) Bootstrap wie ``timestamp``.
+        if not args.no_migrate:
+            await upgrade_head(db_settings.dsn)
+        await worm.ensure_bucket()
+
+        # 3) Auswahl: abgeleitet spanlos, nur dieser Adapter.
+        async with sessions() as s:
+            pending = await list_sources_without_spans(
+                s, adapter_name=adapter.name, limit=args.limit
+            )
+
+        if args.dry_run:
+            print(f"pending={len(pending)} dry_run=True")
+            return 0
+
+        # 4) Pass: je Quelle eine eigene Session.
+        stats = _ReparseStats()
+        for source in pending:
+            async with sessions() as s:
+                outcome = await reparse_source(source, session=s, worm=worm, adapter=adapter)
+            stats.record(outcome)
+            if outcome.status == "hash_mismatch":
+                print(
+                    f"hash_mismatch: {outcome.source_id} (WORM-Bytes passen nicht zum Ledger-Hash)",
+                    file=sys.stderr,
+                )
+
+        print(stats.summary_line(len(pending)))
+        # hash_mismatch ist ein Alarm (nicht Statistik): Exit 4, abgegrenzt von 0/1/2.
+        if stats.hash_mismatch > 0:
+            return 4
+        return 1 if stats.error > 0 else 0
+    finally:
+        await _aclose_all(adapter.aclose, engine.dispose)
 
 
 def _run_serve() -> int:
@@ -494,4 +564,45 @@ class _RunStats:
             f"skipped_duplicate={self.skipped} archive_failed={self.archive_failed} "
             f"fetch_error={self.fetch_error} spans_total={self.spans_total} "
             f"reasons={reasons_field}"
+        )
+
+
+@dataclass
+class _ReparseStats:
+    """Reparse-Pass-Laufzähler als EIN Bündel (R-ARCH-04)."""
+
+    reparsed: int = 0
+    still_empty: int = 0
+    no_text: int = 0
+    skipped_has_spans: int = 0
+    hash_mismatch: int = 0
+    worm_missing: int = 0
+    error: int = 0
+    spans_total: int = 0
+
+    def record(self, outcome: ReparseOutcome) -> None:
+        """Bucht ein ReparseOutcome ein; jeder Status hat genau einen Zähler."""
+        if outcome.status == "reparsed":
+            self.reparsed += 1
+        elif outcome.status == "still_empty":
+            self.still_empty += 1
+        elif outcome.status == "no_text":
+            self.no_text += 1
+        elif outcome.status == "skipped_has_spans":
+            self.skipped_has_spans += 1
+        elif outcome.status == "hash_mismatch":
+            self.hash_mismatch += 1
+        elif outcome.status == "worm_missing":
+            self.worm_missing += 1
+        elif outcome.status == "error":
+            self.error += 1
+        self.spans_total += outcome.span_count
+
+    def summary_line(self, pending: int) -> str:
+        """Genau eine Ergebniszeile; Felder in fester Reihenfolge (AC8)."""
+        return (
+            f"pending={pending} reparsed={self.reparsed} spans_total={self.spans_total} "
+            f"still_empty={self.still_empty} no_text={self.no_text} "
+            f"skipped_has_spans={self.skipped_has_spans} hash_mismatch={self.hash_mismatch} "
+            f"worm_missing={self.worm_missing} error={self.error}"
         )

@@ -131,6 +131,15 @@ docker compose --env-file /srv/wortlaut/.env -f compose.yml \
   run --rm api python -m wortlaut timestamp
 ```
 
+Neben dem Ingest gibt es den Span-Nachzug: `reparse` erzeugt Spans für Quellen,
+die noch keine haben (etwa nach einer Parser-Korrektur), arbeitet ohne Netz und
+fasst Quellen mit Spans nie an. Erst `--dry-run`:
+
+```
+docker compose --env-file /srv/wortlaut/.env -f compose.yml \
+  run --rm api python -m wortlaut reparse --dry-run
+```
+
 **Immer erst mit kleinem `--limit`.** Erst wenn ein solcher Lauf `archive_failed=0`
 meldet, lohnt der volle Durchgang. Der Pre-Flight-Check prüft vorab, ob die
 Zugangsdaten akzeptiert werden und der Archivdienst antwortet — er existiert, weil ein
