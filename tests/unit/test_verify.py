@@ -31,6 +31,15 @@ def _no_timestamps() -> Iterator[None]:
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_attestation() -> Iterator[None]:
+    """Standard: die Quelle hat keine Attestierung (→ attestation_status 'missing', #128)."""
+    with patch(
+        "wortlaut.pipeline.verify.get_attestations_for_source", new=AsyncMock(return_value=[])
+    ):
+        yield
+
+
 def _source(
     content_hash_hex: str,
     *,

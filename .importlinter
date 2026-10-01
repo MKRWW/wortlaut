@@ -105,3 +105,18 @@ forbidden_modules =
 # Typ-Kopplung in allen Contracts unsichtbar.
 ignore_imports =
     wortlaut.archive.throttle -> wortlaut.archive.archiver
+
+# Spec 0128 §0a: /verify und der Quellen-Beleg weisen die Attestierung aus der Datenbank aus —
+# kein Abruf beim Internet Archive im Ausgabepfad.
+[importlinter:contract:ausgabe-ohne-archivabruf]
+name = Verify und Serving rufen keine Archivdienste ab
+type = forbidden
+source_modules =
+    wortlaut.pipeline.verify
+    wortlaut.serving
+forbidden_modules =
+    wortlaut.archive.wayback_lookup
+    wortlaut.archive.archiver
+    wortlaut.archive.spn2
+ignore_imports =
+    wortlaut.archive.throttle -> wortlaut.archive.archiver

@@ -49,6 +49,8 @@ _NORMALIZED_A = " ".join([_V1, _V2, _V3, _MACHINE, _REDACTED, _TAIL])
 _VB = "Ein Satz auf Quelle B zur Integritaetspruefung."
 _NORMALIZED_B = _VB
 
+_ORIGIN_A = "https://dserver.bundestag.de/btp/20/2008800/2008800.pdf"
+
 
 @pytest.fixture
 async def fresh_sessions(fresh_pg_dsn: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
@@ -452,3 +454,65 @@ async def test_unattested_source_never_served(
 
         # Beleg-Endpunkt: unattestierte Quelle → 404 (kein Schlupfloch, ADR-0009).
         assert (await client.get(f"/v1/sources/{src_c_id}")).status_code == 404
+
+
+# ── Spec 0128: /verify und der Quellen-Beleg zeigen die Attestierung ──────
+
+
+async def test_verify_endpoint_shows_attestation(
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
+) -> None:  # AC5
+    """AC5 (0128): /verify zeigt die Attestierung der attestierten Quelle —
+    Status ``"ok"`` und alle vier Felder mit den Werten aus ``source_archive``
+    (der bezeugende Snapshot, NICHT ``archive_wayback``)."""
+    client, ids = await _client(fresh_sessions, worm_store, seed_attestation)
+    expected_url = "https://web.archive.org/web/20260101000000/" + _ORIGIN_A
+    async with client:
+        body = (await client.get(f"/v1/spans/{ids['v1']}/verify")).json()
+    assert body["attestation_status"] == "ok"
+    assert body["attestation_archiver"] == "wayback"
+    assert body["attestation_snapshot_url"] == expected_url
+    assert body["attestation_snapshot_url"] != body["archive_wayback"]
+    assert body["attestation_snapshot_at"] is not None
+    assert body["attestation_verified_sha256"] == body["content_hash_expected"]
+
+
+async def test_source_evidence_shows_attesting_snapshot(
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+) -> None:  # AC6
+    """AC6 (0128): der Quellen-Beleg zeigt den bezeugenden Snapshot —
+    ``attestation_snapshot_url`` ist die URL aus ``source_archive`` (hier
+    bewusst eine frei gewählte, von ``archive_wayback`` verschiedene)."""
+    raw = b"0128 ac6 rohbytes"
+    digest = hashlib.sha256(raw).hexdigest()
+    snapshot = "https://web.archive.org/web/20260928123456/" + _ORIGIN_A
+    async with fresh_sessions() as session:
+        src = await _source(session, digest, "s3://wortlaut-worm/0128-ac6", "Ein Satz.")
+        await session.execute(
+            text(
+                "INSERT INTO source_archive "
+                "(source_id, archiver, snapshot_url, snapshot_at, verified_sha256) "
+                "SELECT id, 'wayback', :u, now(), content_hash "
+                "FROM source WHERE id = CAST(:s AS uuid)"
+            ),
+            {"s": str(src), "u": snapshot},
+        )
+        await session.commit()
+
+    transport = ASGITransport(
+        app=create_app(fresh_sessions, worm_store, allowed_origins=["https://wortlaut.io"])
+    )
+    client = AsyncClient(transport=transport, base_url="http://test")
+    async with client:
+        resp = await client.get(f"/v1/sources/{src}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["attestation_status"] == "ok"
+    assert body["attestation_archiver"] == "wayback"
+    assert body["attestation_snapshot_url"] == snapshot
+    assert body["attestation_snapshot_url"] != body["archive_wayback"]
+    assert body["attestation_snapshot_at"] is not None
+    assert body["attestation_verified_sha256"] == digest
