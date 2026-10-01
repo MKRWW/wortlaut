@@ -42,7 +42,9 @@ services:
     # anlegen — Object-Lock ist nur bei der Erstellung setzbar, und wortlaut legt
     # ihn beim Bootstrap korrekt an. Ein von Hand erzeugter Bucket sieht identisch
     # aus und hat die WORM-Garantie still verloren.
-    image: minio/minio:latest
+    # Gepinnte, unveraenderte Kopie von minio/minio:RELEASE.2025-09-07T16-13-09Z.
+    # Upstream ist nicht mehr abrufbar (#119); ein Wechsel des Speichers braucht eine ADR.
+    image: ghcr.io/mkrww/minio@sha256:a16cad481969d7ddb6fcd2f1c58284af3d1266190b9bedc3ef0801aeb05a93a9
     restart: "no"
     command: server /data --console-address ":9001"
     environment:
