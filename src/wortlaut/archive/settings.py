@@ -30,6 +30,8 @@ class ArchiveSettings(BaseSettings):
     spn2_poll_timeout_seconds: float = 180.0
     attest_max_candidates: int = 3  # Snapshot-Abrufe je Quelle (Spec 0124 §4.2)
     attest_max_snapshot_bytes: int = 100 * 1024 * 1024  # Größengrenze je Abruf (§4.3)
+    capture_cooldown_captured_hours: float = 72.0  # Index-Nachzug abwarten (Spec 0130 §0b)
+    capture_cooldown_failed_hours: float = 6.0  # Fehlschlag frueher erneut versuchen
 
     @model_validator(mode="after")
     def _key_pair_must_be_complete(self) -> "ArchiveSettings":

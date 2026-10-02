@@ -122,7 +122,7 @@ irreführende Fehlerliste erzeugen. Die Schlüssel entstehen unter
 `--dry-run` kommt ohne aus.
 
 Die Läufe folgen einer festen Reihenfolge — **`ingest` → `timestamp` →
-`attest` → `reparse`** — und laufen als einmalige Kommandos, nicht als Dienst:
+`capture` → `attest` → `reparse`** — und laufen als einmalige Kommandos, nicht als Dienst:
 
 ```
 docker compose --env-file /srv/wortlaut/.env -f compose.yml \
@@ -149,6 +149,24 @@ Snapshot-URL erst dann feststeht.
 ```
 docker compose --env-file /srv/wortlaut/.env -f compose.yml \
   run --rm api python -m wortlaut timestamp
+```
+
+**Dazwischen der Capture:** `capture` holt für den Bestand an, was `attest`
+später bezeugen kann. Der Lauf fragt **zuerst** den CDX-Index (nur lesend)
+und löst einen Save-Page-Now-Auftrag nur aus, wenn dort noch kein byte-gleicher
+Snapshot steht. Danach kühlt eine Quelle nach einem erfolgreichen Capture
+72 Stunden ab (bis der Index nachgezogen hat) und nach einem Fehlschlag
+6 Stunden — beide Abkühlzeiten pro ENV einstellbar. Wie `ingest` braucht
+`capture` die Internet-Archive-Zugangsdaten und bricht ohne sie mit Exit 2 ab;
+der Pre-Flight-Check läuft vor der ersten Anfrage (`--no-preflight` überspringt
+ihn). `failed` ist ein normales, protokolliertes Ergebnis (Exit 0) — der Lauf
+versucht die Quelle nach der Abkühlzeit erneut. Bis zum nächsten Increment
+captured `ingest` selbst noch wie bisher; `capture` ergänzt den Schritt für
+Quellen, die einen Snapshot vermisst. Erst `--dry-run`:
+
+```
+docker compose --env-file /srv/wortlaut/.env -f compose.yml \
+  run --rm api python -m wortlaut capture --dry-run
 ```
 
 Dann die Attestierung: `attest` prüft, ob der Internet Archive für jede

@@ -13,7 +13,7 @@ import sys
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import uvicorn
 from pydantic import ValidationError
@@ -28,12 +28,14 @@ from wortlaut.archive.wayback_lookup import HttpWaybackLookup
 from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
 from wortlaut.pipeline.attest import AttestOutcome, attest_source
+from wortlaut.pipeline.capture import CaptureOutcome, capture_source
 from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
 from wortlaut.pipeline.reparse import ReparseOutcome, reparse_source
 from wortlaut.pipeline.timestamp import TimestampOutcome, timestamp_source
 from wortlaut.serving.settings import ApiSettings
 from wortlaut.store.adapters import ensure_ingest_adapter
 from wortlaut.store.attestations import list_sources_without_attestation
+from wortlaut.store.captures import list_sources_needing_capture
 from wortlaut.store.db import create_async_engine_from, make_sessionmaker
 from wortlaut.store.migrations import upgrade_head
 from wortlaut.store.reparse import list_sources_without_spans
@@ -75,15 +77,21 @@ def main(argv: list[str] | None = None) -> int:
     p_attest.add_argument("--dry-run", action="store_true")
     p_attest.add_argument("--no-migrate", action="store_true")
 
+    p_capture = subparsers.add_parser("capture")
+    p_capture.add_argument("--limit", type=int, default=None)
+    p_capture.add_argument("--dry-run", action="store_true")
+    p_capture.add_argument("--no-migrate", action="store_true")
+    p_capture.add_argument("--no-preflight", action="store_true")
+
     subparsers.add_parser("serve")
 
     args = parser.parse_args(argv)
 
     subcommand = getattr(args, "subcommand", None)
-    if subcommand not in ("ingest", "timestamp", "reparse", "attest", "serve"):
+    if subcommand not in ("ingest", "timestamp", "reparse", "attest", "capture", "serve"):
         print(
-            "Fehler: Subcommand 'ingest', 'timestamp', 'reparse', 'attest' oder 'serve' "
-            "erforderlich",
+            "Fehler: Subcommand 'ingest', 'timestamp', 'reparse', 'attest', 'capture' "
+            "oder 'serve' erforderlich",
             file=sys.stderr,
         )
         return 2
@@ -96,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_reparse(args))
     if subcommand == "attest":
         return asyncio.run(_run_attest(args))
+    if subcommand == "capture":
+        return asyncio.run(_run_capture(args))
     # uvicorn bringt seinen eigenen Event-Loop mit — kein asyncio.run drumherum.
     return _run_serve()
 
@@ -419,6 +429,115 @@ async def _run_attest(args: argparse.Namespace) -> int:
             await _aclose_all(lookup.aclose, engine.dispose)
         else:
             await _aclose_all(engine.dispose)
+
+
+async def _run_capture(args: argparse.Namespace) -> int:
+    """Composition-Root für den Capture-Pass (Spec 0130 §4.4).
+
+    Settings → Zugangsdaten → Engine → WORM → Archiver → Auswahl → Pre-Flight
+    → Pass. Exit: 0 = ok, 2 = Konfiguration, 3 = Circuit-Breaker,
+    4 = hash_mismatch (Alarm, Muster ``timestamp``), 1 = error. ``failed``
+    allein ist **kein** Fehler-Exit (wird protokolliert und abgekühlt).
+    ``capture`` schreibt nur in ``capture_request``, nie in ``source_archive``
+    (AC11); archive.today wird nicht verwendet, nur geschlossen (AC10).
+    """
+    # 1) Settings aus ENV — Konfiguration ist EIN Block, EIN Rückgabepunkt (Exit 2).
+    try:
+        db_settings = DbSettings()
+        worm_settings = WormSettings()
+        archive_settings = ArchiveSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return 2
+
+    # Zugangsdaten-Pflicht (Muster ingest, Spec 0108 §4.5): Save Page Now
+    # lehnt anonyme Aufrufe mit 401 ab. ``--dry-run`` setzt keine Anfrage
+    # und bleibt deshalb erlaubt.
+    credentials = _ia_credentials(archive_settings)
+    if _credentials_missing(credentials, dry_run=args.dry_run):
+        return 2
+
+    engine = create_async_engine_from(db_settings)
+    sessions = make_sessionmaker(engine)
+    worm = MinioWormStore(worm_settings)
+    wayback, atoday_inner, _atoday = _build_archivers(archive_settings, credentials)
+    lookup: HttpWaybackLookup | None = None
+
+    # ``now`` einmal je Lauf hier gesetzt und an die Auswahl übergeben
+    # (testbar, keine versteckte Uhr, Spec 0130 §4.2).
+    now = datetime.now(UTC)
+
+    try:
+        # 2) Bootstrap wie ``timestamp``.
+        if not args.no_migrate:
+            await upgrade_head(db_settings.dsn)
+        await worm.ensure_bucket()
+
+        # 3) Auswahl: unattestiert, kein byte-gleicher Snapshot, abgekühlt.
+        async with sessions() as s:
+            pending = await list_sources_needing_capture(
+                s,
+                now=now,
+                captured_cooldown=timedelta(hours=archive_settings.capture_cooldown_captured_hours),
+                failed_cooldown=timedelta(hours=archive_settings.capture_cooldown_failed_hours),
+                limit=args.limit,
+            )
+
+        if args.dry_run:
+            print(f"pending={len(pending)} dry_run=True")
+            return 0
+
+        # 4) Lookup erst JETZT bauen (Muster ``attest``): ``--dry-run`` löst
+        #    keinen einzigen Abruf aus.
+        lookup = HttpWaybackLookup(
+            limiter=RateLimiter(archive_settings.wayback_min_interval_seconds),
+            max_bytes=archive_settings.attest_max_snapshot_bytes,
+            attempts=archive_settings.retry_attempts,
+            base_delay_seconds=archive_settings.retry_base_delay_seconds,
+        )
+
+        # 5) Pre-Flight (Muster ingest) vor der ersten Anfrage; Ausfall → Exit 3.
+        if not await _preflight_ok(args, archive_settings, wayback):
+            return 3
+
+        # 6) Pass: je Quelle eine eigene Session; archive.today bleibt ungenutzt.
+        stats = _CaptureStats()
+        breaker_limit = archive_settings.consecutive_failure_limit
+
+        for candidate in pending:
+            async with sessions() as s:
+                outcome = await capture_source(
+                    candidate, session=s, worm=worm, lookup=lookup, wayback=wayback
+                )
+            stats.record(outcome)
+            if outcome.status == "hash_mismatch":
+                print(
+                    f"hash_mismatch: {outcome.source_id} (WORM-Bytes passen nicht zum Ledger-Hash)",
+                    file=sys.stderr,
+                )
+
+            # Circuit-Breaker (Spec 0130 §4.4): consecutive_failure_limit
+            # aufeinanderfolgende failed oder error. Limit <= 0 schaltet ab.
+            if 0 < breaker_limit <= stats.consecutive_failure:
+                print(
+                    f"Circuit-Breaker: {breaker_limit} aufeinanderfolgende failed/error — Abbruch",
+                    file=sys.stderr,
+                )
+                print(stats.summary_line(len(pending)))
+                return 3
+
+        print(stats.summary_line(len(pending)))
+        # hash_mismatch ist ein Alarm (nicht Statistik): Exit 4, Vorrang vor 1.
+        if stats.hash_mismatch > 0:
+            return 4
+        if stats.error > 0:
+            return 1
+        return 0
+    finally:
+        if lookup is not None:
+            await _aclose_all(wayback.aclose, atoday_inner.aclose, lookup.aclose, engine.dispose)
+        else:
+            await _aclose_all(wayback.aclose, atoday_inner.aclose, engine.dispose)
 
 
 def _run_serve() -> int:
@@ -752,4 +871,47 @@ class _AttestStats:
             f"snapshot_unavailable={self.snapshot_unavailable} "
             f"bytes_mismatch={self.bytes_mismatch} hash_mismatch={self.hash_mismatch} "
             f"worm_missing={self.worm_missing} error={self.error}"
+        )
+
+
+@dataclass
+class _CaptureStats:
+    """Capture-Pass-Laufzähler als EIN Bündel (R-ARCH-04)."""
+
+    captured: int = 0
+    already_archived: int = 0
+    failed: int = 0
+    hash_mismatch: int = 0
+    worm_missing: int = 0
+    error: int = 0
+    consecutive_failure: int = 0
+
+    def record(self, outcome: CaptureOutcome) -> None:
+        """Bucht ein CaptureOutcome ein; failed/error verlängern die Fehlerserie,
+        der Rest bricht sie (Spec 0130 §4.4)."""
+        status = outcome.status
+        if status == "captured":
+            self.captured += 1
+        elif status == "already_archived":
+            self.already_archived += 1
+        elif status == "failed":
+            self.failed += 1
+        elif status == "hash_mismatch":
+            self.hash_mismatch += 1
+        elif status == "worm_missing":
+            self.worm_missing += 1
+        elif status == "error":
+            self.error += 1
+        if status == "failed" or status == "error":
+            self.consecutive_failure += 1
+        else:
+            self.consecutive_failure = 0
+
+    def summary_line(self, pending: int) -> str:
+        """Genau eine Ergebniszeile; Felder in fester Reihenfolge (Spec 0130 §4.4)."""
+        return (
+            f"pending={pending} captured={self.captured} "
+            f"already_archived={self.already_archived} failed={self.failed} "
+            f"hash_mismatch={self.hash_mismatch} worm_missing={self.worm_missing} "
+            f"error={self.error}"
         )
