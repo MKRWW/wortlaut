@@ -270,3 +270,33 @@ class SourceArchive(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class CaptureRequest(Base):
+    """Erfolgte oder fehlgeschlagene Capture-Anfrage; immutabel/append-only (Trigger, Spec 0130).
+
+    Gedächtnis gegen Doppel-Captures (Spec 0130 §0b): eine Zeile pro
+    tatsächlich abgesetztem Auftrag (``captured``/``failed``); ein erfolgreicher
+    CDX-Check (``already_archived``) erzeugt keine Zeile. Das ist Protokoll,
+    **kein** Beweis (AC11) — die Bezeugung lebt ausschließlich in
+    ``source_archive``. **Kein** UNIQUE: die Historie der Anfragen ist gerade
+    der Inhalt; die ``chk_capture_outcome``-Zuordnung (``captured`` ⇒
+    ``snapshot_url``, ``failed`` ⇒ ``reason``) erzwingt die DB, nicht das ORM
+    (ADR-0003 rev.).
+    """
+
+    __tablename__ = "capture_request"
+
+    id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    source_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey(_SOURCE_ID_FK), nullable=False
+    )
+    archiver: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot_url: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
