@@ -40,6 +40,7 @@ from wortlaut.store.db import create_async_engine_from, make_sessionmaker
 from wortlaut.store.migrations import upgrade_head
 from wortlaut.store.reparse import list_sources_without_spans
 from wortlaut.store.settings import DbSettings, WormSettings
+from wortlaut.store.status import backlog_counts
 from wortlaut.store.timestamps import list_sources_without_timestamp
 from wortlaut.store.worm import MinioWormStore
 from wortlaut.timestamp.profiles import load_profile
@@ -60,7 +61,6 @@ def main(argv: list[str] | None = None) -> int:
     p_ingest.add_argument("--limit", type=int, default=None)
     p_ingest.add_argument("--no-migrate", action="store_true")
     p_ingest.add_argument("--dry-run", action="store_true")
-    p_ingest.add_argument("--no-preflight", action="store_true")
 
     p_timestamp = subparsers.add_parser("timestamp")
     p_timestamp.add_argument("--limit", type=int, default=None)
@@ -83,15 +83,25 @@ def main(argv: list[str] | None = None) -> int:
     p_capture.add_argument("--no-migrate", action="store_true")
     p_capture.add_argument("--no-preflight", action="store_true")
 
+    subparsers.add_parser("status")
+
     subparsers.add_parser("serve")
 
     args = parser.parse_args(argv)
 
     subcommand = getattr(args, "subcommand", None)
-    if subcommand not in ("ingest", "timestamp", "reparse", "attest", "capture", "serve"):
+    if subcommand not in (
+        "ingest",
+        "timestamp",
+        "reparse",
+        "attest",
+        "capture",
+        "status",
+        "serve",
+    ):
         print(
-            "Fehler: Subcommand 'ingest', 'timestamp', 'reparse', 'attest', 'capture' "
-            "oder 'serve' erforderlich",
+            "Fehler: Subcommand 'ingest', 'timestamp', 'reparse', 'attest', "
+            "'capture', 'status' oder 'serve' erforderlich",
             file=sys.stderr,
         )
         return 2
@@ -106,32 +116,32 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_attest(args))
     if subcommand == "capture":
         return asyncio.run(_run_capture(args))
+    if subcommand == "status":
+        return asyncio.run(_run_status())
     # uvicorn bringt seinen eigenen Event-Loop mit — kein asyncio.run drumherum.
     return _run_serve()
 
 
 async def _run(args: argparse.Namespace) -> int:
-    """Composition-Root. Reihenfolge: Settings -> Engine -> Adapter -> Loop."""
+    """Composition-Root. Reihenfolge: Settings -> Engine -> Adapter -> Loop.
+
+    Seit #132 (ADR-0009) spricht ``ingest`` nicht mehr mit dem Internet
+    Archive: keine Zugangsdaten, kein Archivar-Aufbau, kein Pre-Flight, kein
+    Circuit-Breaker. Ein Archiv-Ausfall kostet einen Wiederholungslauf
+    (``capture``), kein Dokument. Exit: 0 = ok, 2 = Konfiguration oder
+    discover-Fehler.
+    """
     # 1) Settings aus ENV
     loaded = _load_settings()
     if loaded is None:
         return 2
-    db_settings, worm_settings, dip_settings, archive_settings = loaded
-
-    # Zugangsdaten-Pflicht (Spec 0108 §4.5): am Composition-Root, VOR dem
-    # ersten Fetch — dort, wo die Konfiguration ohnehin gelesen wird.
-    # Save Page Now lehnt anonyme Aufrufe mit 401 ab; ohne Archivierung kein
-    # Insert. ``--dry-run`` archiviert nicht und bleibt deshalb erlaubt.
-    credentials = _ia_credentials(archive_settings)
-    if _credentials_missing(credentials, dry_run=args.dry_run):
-        return 2
+    db_settings, worm_settings, dip_settings = loaded
 
     engine = create_async_engine_from(db_settings)
     sessions = make_sessionmaker(engine)
     adapter = DipPlenarprotokollAdapter(dip_settings)
     worm = MinioWormStore(worm_settings)
-    wayback, atoday_inner, atoday = _build_archivers(archive_settings, credentials)
-    deps = PipelineDeps(adapter=adapter, wayback=wayback, archive_today=atoday, worm=worm)
+    deps = PipelineDeps(adapter=adapter, worm=worm)
 
     try:
         # 2) Bootstrap
@@ -147,13 +157,7 @@ async def _run(args: argparse.Namespace) -> int:
             )
             await s.commit()
 
-        # 3) Pre-Flight-Archiv-Health-Check (Spec 0077), NACH dem Bootstrap und
-        #    VOR discover — bei totem Fremdarchiv wird damit kein DIP-Call und
-        #    kein Ziel-PDF geladen.
-        if not await _preflight_ok(args, archive_settings, wayback):
-            return 3
-
-        # 4) Discover + Loop
+        # 3) Discover + Loop
         try:
             refs = list(await adapter.discover(args.since))
         except (DipFetchError, ValueError) as e:
@@ -168,14 +172,9 @@ async def _run(args: argparse.Namespace) -> int:
             refs = refs[: args.limit]
 
         stats = _RunStats()
-        breaker_limit = archive_settings.consecutive_failure_limit
 
         if args.dry_run:
-            print(
-                f"discovered={len(refs)} inserted=0 "
-                f"skipped_duplicate=0 archive_failed=0 "
-                f"fetch_error=0 spans_total=0 dry_run=True"
-            )
+            print(f"discovered={len(refs)} dry_run=True")
             return 0
 
         for ref in refs:
@@ -185,29 +184,14 @@ async def _run(args: argparse.Namespace) -> int:
                         ref, deps=deps, session=s, rights_basis=args.rights_basis
                     )
                 stats.record(outcome)
-                if outcome.status == "archive_failed":
-                    labels = ",".join(outcome.archive_failures)
-                    print(f"archive_failed: {ref.origin_url}: {labels}", file=sys.stderr)
             except (DipFetchError, ValueError) as e:
                 stats.fetch_error += 1
                 print(f"fetch_error: {ref.origin_url}: {e}", file=sys.stderr)
 
-            # Circuit-Breaker (Q1): anhaltender Archiv-Ausfall bricht früh und
-            # diagnostizierbar ab — Exit 3 (abgegrenzt von 2 = Konfiguration).
-            # Limit <= 0 schaltet den Breaker ab.
-            if 0 < breaker_limit <= stats.consecutive_archive_failed:
-                print(
-                    f"Circuit-Breaker: {breaker_limit} aufeinanderfolgende archive_failed "
-                    f"— Abbruch, häufigster Grund: {stats.top_reason()}",
-                    file=sys.stderr,
-                )
-                print(stats.summary_line(len(refs)))
-                return 3
-
         print(stats.summary_line(len(refs)))
         return 0
     finally:
-        await _aclose_all(adapter.aclose, wayback.aclose, atoday_inner.aclose, engine.dispose)
+        await _aclose_all(adapter.aclose, engine.dispose)
 
 
 async def _run_timestamp(args: argparse.Namespace) -> int:
@@ -552,6 +536,39 @@ async def _run_capture(args: argparse.Namespace) -> int:
             await _aclose_all(wayback.aclose, atoday_inner.aclose, engine.dispose)
 
 
+async def _run_status() -> int:
+    """Composition-Root für ``status`` (Spec 0132 §4.4): nur lesend.
+
+    Settings → Engine → eine Session → ``backlog_counts`` → genau eine
+    Zeile. **Kein** ``upgrade_head``, kein Bucket, kein Netz — ``status``
+    zeigt den Rückstand, ohne irgendetwas anzufassen.
+    Exit: 0 = ok, 2 = Konfiguration.
+    """
+    # 1) Settings aus ENV — Konfiguration ist EIN Block, EIN Rückgabepunkt (Exit 2).
+    try:
+        db_settings = DbSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return 2
+
+    engine = create_async_engine_from(db_settings)
+    sessions = make_sessionmaker(engine)
+
+    try:
+        async with sessions() as s:
+            counts = await backlog_counts(s)
+    finally:
+        await _aclose_all(engine.dispose)
+
+    print(
+        f"sources={counts.sources} unstamped={counts.unstamped} "
+        f"unattested={counts.unattested} "
+        f"unattested_capture_failed={counts.unattested_capture_failed} "
+        f"attested_without_spans={counts.attested_without_spans}"
+    )
+    return 0
+
+
 def _run_serve() -> int:
     """Composition-Root fuer ``serve``: ENV pruefen, dann uebernimmt uvicorn.
 
@@ -596,10 +613,12 @@ def _config_error(e: Exception) -> str:
     return str(e)
 
 
-def _load_settings() -> tuple[DbSettings, WormSettings, DipSettings, ArchiveSettings] | None:
-    """Alle Settings aus der Umgebung; ``None`` ⇒ Meldung ist raus, Aufrufer gibt 2 zurück."""
+def _load_settings() -> tuple[DbSettings, WormSettings, DipSettings] | None:
+    """Alle Settings für ``ingest`` aus der Umgebung; ``None`` ⇒ Meldung ist
+    raus, Aufrufer gibt 2 zurück. Seit #132 keine ``ArchiveSettings`` mehr:
+    ``ingest`` braucht keine Internet-Archive-Zugangsdaten (ADR-0009)."""
     try:
-        return DbSettings(), WormSettings(), DipSettings(), ArchiveSettings()
+        return DbSettings(), WormSettings(), DipSettings()
     except Exception as e:
         print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
         return None
@@ -751,51 +770,24 @@ class _TimestampStats:
 
 @dataclass
 class _RunStats:
-    """Laufzähler + Gründe-Verteilung als EIN Bündel (R-ARCH-04: max. 5 Parameter)."""
+    """Laufzähler als EIN Bündel (R-ARCH-04: max. 5 Parameter)."""
 
     inserted: int = 0
     skipped: int = 0
-    archive_failed: int = 0
     fetch_error: int = 0
-    spans_total: int = 0
-    consecutive_archive_failed: int = 0
-    reasons: Counter[str] = field(default_factory=Counter)
 
     def record(self, outcome: IngestOutcome) -> None:
-        """Bucht ein Ingest-Ergebnis ein; Erfolg/Dedup bricht die Fehlerserie."""
-        self.reasons.update(outcome.archive_failures)
+        """Bucht ein Ingest-Ergebnis ein (``inserted``/``skipped_duplicate``)."""
         if outcome.status == "inserted":
             self.inserted += 1
-            self.consecutive_archive_failed = 0
         elif outcome.status == "skipped_duplicate":
             self.skipped += 1
-            self.consecutive_archive_failed = 0
-        elif outcome.status == "archive_failed":
-            self.archive_failed += 1
-            self.consecutive_archive_failed += 1
-        self.spans_total += outcome.span_count
-
-    def _ordered_reasons(self) -> list[tuple[str, int]]:
-        """Häufigkeit absteigend, bei Gleichstand alphabetisch."""
-        return sorted(self.reasons.items(), key=lambda item: (-item[1], item[0]))
-
-    def top_reason(self) -> str:
-        """Häufigster Grund als ``<label>=<n>``; ``-`` wenn keiner erfasst ist."""
-        ordered = self._ordered_reasons()
-        if not ordered:
-            return "-"
-        label, count = ordered[0]
-        return f"{label}={count}"
 
     def summary_line(self, discovered: int) -> str:
-        """Summary; bestehende Felder/Reihenfolge unverändert, reasons= angehängt."""
-        ordered = self._ordered_reasons()
-        reasons_field = ",".join(f"{label}={count}" for label, count in ordered) or "-"
+        """Summary; Felder in fester Reihenfolge (Spec 0132 §4.2)."""
         return (
             f"discovered={discovered} inserted={self.inserted} "
-            f"skipped_duplicate={self.skipped} archive_failed={self.archive_failed} "
-            f"fetch_error={self.fetch_error} spans_total={self.spans_total} "
-            f"reasons={reasons_field}"
+            f"skipped_duplicate={self.skipped} fetch_error={self.fetch_error}"
         )
 
 

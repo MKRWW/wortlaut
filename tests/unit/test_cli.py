@@ -1,5 +1,5 @@
-"""CLI Unit-Tests AC1-AC8 (+ main/__main__ Coverage, #73 Breaker,
-#77/#108 Pre-Flight) — keine Live-Netz-/DB-Calls."""
+"""CLI Unit-Tests AC1-AC8 (+ main/__main__ Coverage, #132: Ingest ohne Archiv)
+— keine Live-Netz-/DB-Calls."""
 
 from __future__ import annotations
 
@@ -12,18 +12,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import SecretStr
 
-from wortlaut.archive.errors import ArchiveError
-from wortlaut.archive.settings import ArchiveSettings
 from wortlaut.cli import _run, main
 from wortlaut.ingest.adapter import SourceRef
 from wortlaut.ingest.dip import DipFetchError
 from wortlaut.pipeline.ingest import IngestOutcome
 
 # ── Fakes ────────────────────────────────────────────────────────────────
-
-USER_STATUS_SUMMARY = "available=3 processing=0 daily_captures=0/30000"
 
 
 class FakeAdapter:
@@ -47,32 +42,6 @@ class FakeAdapter:
     async def fetch(self, ref: SourceRef) -> object:
         self.fetch_calls += 1
         return object()
-
-    async def aclose(self) -> None:
-        self.aclose_called = True
-
-
-class FakeArchiver:
-    def __init__(self) -> None:
-        self.aclose_called = False
-        self.user_status_calls = 0
-        self.archive_calls: list[str] = []
-        self.archive_error: ArchiveError | None = None
-        self.user_status_error: ArchiveError | None = None
-        self.archive_result = "https://web.archive.org/snapshot/xyz"
-        self.user_status_result = USER_STATUS_SUMMARY
-
-    async def user_status(self) -> str:
-        self.user_status_calls += 1
-        if self.user_status_error is not None:
-            raise self.user_status_error
-        return self.user_status_result
-
-    async def archive(self, origin_url: str) -> str:
-        self.archive_calls.append(origin_url)
-        if self.archive_error is not None:
-            raise self.archive_error
-        return self.archive_result
 
     async def aclose(self) -> None:
         self.aclose_called = True
@@ -113,35 +82,9 @@ def _ns(**kw: object) -> Namespace:
         "limit": None,
         "no_migrate": True,
         "dry_run": False,
-        "no_preflight": False,
     }
     base.update(kw)
     return Namespace(**base)
-
-
-def _archive_settings_ns(
-    *,
-    preflight_enabled: bool = True,
-    ia_access_key: str | None = None,
-    ia_secret: str | None = None,
-) -> SimpleNamespace:
-    """ArchiveSettings-Ersatz; die Zugangsdaten sind SecretStr-Objekte (wie in
-    der echten Klasse), damit ``_ia_credentials`` unverändert getestet wird.
-    Zusammengesetzte Testwerte (S6698: keine ausschreibenden
-    Zugangsdaten-artigen Literale)."""
-    return SimpleNamespace(
-        wayback_min_interval_seconds=10.0,
-        archive_today_min_interval_seconds=15.0,
-        retry_attempts=3,
-        retry_base_delay_seconds=2.0,
-        optional_failure_limit=3,
-        consecutive_failure_limit=5,
-        preflight_enabled=preflight_enabled,
-        ia_access_key=SecretStr(ia_access_key) if ia_access_key is not None else None,
-        ia_secret=SecretStr(ia_secret) if ia_secret is not None else None,
-        spn2_poll_interval_seconds=3.0,
-        spn2_poll_timeout_seconds=180.0,
-    )
 
 
 def _credentials_env(
@@ -157,37 +100,24 @@ def _credentials_env(
 
 
 @pytest.fixture
-def wired(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[SimpleNamespace]:
-    """Patcht alle Composition-Root-Deps von wortlaut.cli; gibt Handles zurueck.
+def wired() -> Iterator[SimpleNamespace]:
+    """Patcht alle Composition-Root-Deps von wortlaut.cli; gibt Handles zurück.
 
-    ENV-Defaults: beide IA-Zugangsdaten gesetzt (der normale, produktive Fall);
-    Tests, die die Pflicht pruefen, patchen ArchiveSettings selbst (keine
-    Zugangsdaten im Namespace). Der gepatchte ArchiveSettings-Ersatz traegt
-    die Zugangsdaten als SecretStr im Objekt (nicht nur in der ENV).
+    Seit #132 (ADR-0009) liest ``_run`` nur noch Db-/Worm-/Dip-Settings —
+    keine Internet-Archive-Zugangsdaten, keine Archivare, kein Pre-Flight.
     """
-    _credentials_env(monkeypatch, access="k-abc-1", secret="s-xyz-2")
     adapter = FakeAdapter()
-    wayback = FakeArchiver()
-    atoday = FakeArchiver()
     worm = FakeWorm()
     engine = MagicMock()
     engine.dispose = AsyncMock()
-    ingest = AsyncMock(return_value=IngestOutcome("inserted", None, "h", span_count=0))
+    ingest = AsyncMock(return_value=IngestOutcome("inserted", None, "h"))
     with (
         patch("wortlaut.cli.DbSettings", return_value=MagicMock(dsn="f")),
         patch("wortlaut.cli.WormSettings", return_value=MagicMock()),
         patch("wortlaut.cli.DipSettings", return_value=MagicMock()),
-        patch(
-            "wortlaut.cli.ArchiveSettings",
-            return_value=_archive_settings_ns(ia_access_key="k-abc-1", ia_secret="s-xyz-2"),
-        ),
         patch("wortlaut.cli.create_async_engine_from", return_value=engine),
         patch("wortlaut.cli.make_sessionmaker", return_value=FakeSessionmaker()),
         patch("wortlaut.cli.DipPlenarprotokollAdapter", return_value=adapter),
-        patch("wortlaut.cli.WaybackArchiver", return_value=wayback),
-        patch("wortlaut.cli.ArchiveTodayArchiver", return_value=atoday),
         patch("wortlaut.cli.MinioWormStore", return_value=worm),
         patch("wortlaut.cli.upgrade_head", new=AsyncMock()),
         patch("wortlaut.cli.ensure_ingest_adapter", new=AsyncMock()),
@@ -195,8 +125,6 @@ def wired(
     ):
         yield SimpleNamespace(
             adapter=adapter,
-            wayback=wayback,
-            atoday=atoday,
             worm=worm,
             engine=engine,
             ingest=ingest,
@@ -230,18 +158,18 @@ async def test_empty_discover_noop(
 async def test_partial_outcomes_dont_abort(
     wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """AC3: [archive_failed, inserted] -> kein Abbruch, rc 0."""
+    """AC3: [skipped_duplicate, inserted] -> kein Abbruch, rc 0."""
     wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
     wired.ingest.side_effect = [
-        IngestOutcome("archive_failed", None, "h1", span_count=0),
-        IngestOutcome("inserted", None, "h2", span_count=0),
+        IngestOutcome("skipped_duplicate", None, "h1"),
+        IngestOutcome("inserted", None, "h2"),
     ]
     rc = await _run(_ns())
     out = capfd.readouterr().out
     assert rc == 0
     assert wired.ingest.call_count == 2
     assert "inserted=1" in out
-    assert "archive_failed=1" in out
+    assert "skipped_duplicate=1" in out
 
 
 async def test_fetch_error_caught(
@@ -251,7 +179,7 @@ async def test_fetch_error_caught(
     wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
     wired.ingest.side_effect = [
         DipFetchError("net"),
-        IngestOutcome("inserted", None, "h2", span_count=0),
+        IngestOutcome("inserted", None, "h2"),
     ]
     rc = await _run(_ns())
     out = capfd.readouterr().out
@@ -273,13 +201,11 @@ async def test_missing_env_exits_nonzero(
 
 
 async def test_resources_closed_in_finally(wired: SimpleNamespace) -> None:
-    """AC6: aclose/dispose je 1x, auch wenn discover wirft."""
+    """AC6: Adapter-aclose und Engine-dispose je 1x, auch wenn discover wirft."""
     wired.adapter.discover_exc = DipFetchError("boom")
     rc = await _run(_ns())
     assert rc == 2  # discover fehlgeschlagen
     assert wired.adapter.aclose_called
-    assert wired.wayback.aclose_called
-    assert wired.atoday.aclose_called
     wired.engine.dispose.assert_awaited_once()
 
 
@@ -339,235 +265,135 @@ def test_module_entrypoint_no_subcommand() -> None:
     assert result.returncode == 2
 
 
-# ── #73: Circuit-Breaker (AC7) + Gründe-Aggregation (AC8) ────────────────
+# ── #132 AC4: Ingest ohne Internet Archive ───────────────────────────────
 
 
-def _archive_failed_outcome(url: str) -> IngestOutcome:
-    """archive_failed mit Wayback-404 und archive.today-429 als Labels."""
-    return IngestOutcome(
-        "archive_failed",
-        None,
-        f"h-{url}",
-        span_count=0,
-        archive_failures=("wayback:http_status_404", "archive_today:http_status_429"),
-    )
-
-
-async def test_circuit_breaker_aborts_run(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+async def test_ingest_needs_no_ia_credentials(
+    wired: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """AC7: consecutive_failure_limit=5 erreicht -> Lauf bricht ab, Exit-Code 3,
-    nicht mehr als 5 Sources verarbeitet, Ausgabe nennt Abbruchgrund und
-    Gründe-Verteilung."""
-    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 8)]
-    wired.ingest.side_effect = [_archive_failed_outcome(f"http://a/p{i}.pdf") for i in range(1, 8)]
-    rc = await _run(_ns())
-    cap = capfd.readouterr()
-    assert rc == 3
-    assert wired.ingest.call_count == 5  # nicht mehr als `limit` Sources
-    assert "archive_failed=5" in cap.out
-    assert "Circuit-Breaker" in cap.err
-    assert "häufigster Grund" in cap.err
-    assert (
-        "archive_today:http_status_429=5" in cap.err
-    )  # häufigster Grund (Gleichstand → alphabetisch)
-    # Summary-Zeile mit Gründe-Verteilung (Häufigkeit absteigend, Gleichstand alphabetisch)
-    assert "reasons=archive_today:http_status_429=5,wayback:http_status_404=5" in cap.out
-    # Abbruch tritt ein, BEVOR die restlichen Refs verarbeitet werden
-    assert "p6" not in cap.err
-
-
-async def test_circuit_breaker_resets_on_success(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
-) -> None:
-    """AC7 (Zähler-Reset): ein Erfolg zwischen den Fehlern setzt die
-    aufeinanderfolgenden archive_failed zurück -> kein Abbruch, rc 0.
-
-    Pattern (12 Refs, je 3.): F F I — die kurzen Fails-Serien (max. 2) werden
-    durch die Inserts durchbrochen; der aufeinanderfolgende Zähler erreicht nie
-    das Limit 5, der Lauf bleibt am Leben.
-    """
-    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 13)]
-    outcomes: list[IngestOutcome] = []
-    for i in range(1, 13):
-        if i % 3 == 0:
-            outcomes.append(IngestOutcome("inserted", None, f"h{i}", span_count=0))
-        else:
-            outcomes.append(_archive_failed_outcome(f"http://a/p{i}.pdf"))
-    wired.ingest.side_effect = outcomes
-    rc = await _run(_ns())
-    cap = capfd.readouterr()
-    assert rc == 0
-    assert wired.ingest.call_count == 12
-    assert "inserted=4" in cap.out
-    assert "archive_failed=8" in cap.out
-
-
-async def test_circuit_breaker_without_reset_would_abort(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
-) -> None:
-    """Gegenprobe zum Reset-Test: WÄRE der Zähler nicht reset, würde die Serie
-    p1..p5 (5 consecutive) den Breaker auslösen. Ein Erfolg als p3 verhindert
-    das — das zeigt: der Reset ist das einzige, was den Lauf am Leben hält."""
-    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 8)]
-    outcomes: list[IngestOutcome] = []
-    for i in range(1, 8):
-        if i == 3:
-            outcomes.append(IngestOutcome("inserted", None, f"h{i}", span_count=0))
-        else:
-            outcomes.append(_archive_failed_outcome(f"http://a/p{i}.pdf"))
-    wired.ingest.side_effect = outcomes
-    rc = await _run(_ns())
-    # p1,p2 = 2 Fails, p3 = Insert (reset), p4..p7 = 4 Fails → unter Limit → rc 0
-    assert rc == 0
-    assert wired.ingest.call_count == 7
-    assert "archive_failed=6" in capfd.readouterr().out
-
-
-async def test_summary_reports_failure_reasons(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
-) -> None:
-    """AC8: Lauf mit ≥1 Archiv-Fehler -> Summary-Zeile enthält ein
-    `reasons=`-Feld mit jedem Grund (Dienst, Kürzel, Anzahl)."""
-    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 5)]
-    wired.ingest.side_effect = [_archive_failed_outcome(f"http://a/p{i}.pdf") for i in range(1, 5)]
-    rc = await _run(_ns())
-    out = capfd.readouterr().out
-    assert rc == 0
-    assert "reasons=archive_today:http_status_429=4,wayback:http_status_404=4" in out
-
-
-async def test_summary_reports_dash_when_no_failures(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
-) -> None:
-    """AC8 (leerer Counter): keine Archiv-Fehler -> `reasons=-`."""
+    """AC4: keine WORTLAUT_ARCHIVE_IA_* in der ENV -> der Lauf geht trotzdem
+    durch (kein Exit 2 mehr, ADR-0009) und meldet die neue Summary-Zeile."""
+    _credentials_env(monkeypatch, access=None, secret=None)
     wired.adapter.refs = [_ref("http://a/p1.pdf")]
     rc = await _run(_ns())
-    out = capfd.readouterr().out
-    assert rc == 0
-    assert "reasons=-" in out
-
-
-# ── #77/#108: Pre-Flight-Archiv-Health-Check (User-Status-Probe) ─────────
-
-
-async def test_preflight_failure_aborts_before_discover(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
-) -> None:
-    """AC1: User-Status-Probe wirft ArchiveError (401) -> Exit 3, discover 0×,
-    fetch 0×, Ausgabe nennt 'Pre-Flight' samt Grund — VOR dem ersten Fetch."""
-    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
-    wired.wayback.user_status_error = ArchiveError(
-        "wayback", "unauthorized", status_code=401, transient=False
-    )
-    rc = await _run(_ns())
-    cap = capfd.readouterr()
-    assert rc == 3
-    assert wired.adapter.discover_calls == 0  # kein DIP-Call
-    assert wired.adapter.fetch_calls == 0  # kein Ziel-PDF
-    assert wired.ingest.call_count == 0
-    assert "Pre-Flight" in cap.err
-    assert "401" in cap.err  # Statuscode bleibt in der Meldung erhalten
-    assert wired.wayback.user_status_calls == 1  # genau ein Probe-Call
-
-
-async def test_preflight_healthy_runs_normally(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
-) -> None:
-    """AC2: Probe liefert die User-Status-Zusammenfassung -> Ingest läuft
-    normal weiter (Exit 0, Summary wie bisher). Der User-Status-Call geht
-    genau einmal raus; es wird KEIN Capture abgesetzt."""
-    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
-    rc = await _run(_ns())
     cap = capfd.readouterr()
     assert rc == 0
-    assert wired.wayback.user_status_calls == 1  # die Probe ging raus
-    assert wired.wayback.archive_calls == []  # KEIN Capture durch die Probe
-    assert wired.adapter.discover_calls == 1
-    assert wired.ingest.call_count == 2  # beide Refs normal verarbeitet
-    assert "discovered=2" in cap.out  # Summary wie bisher
-
-
-async def test_no_preflight_flag_skips_probe(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
-) -> None:
-    """AC4: --no-preflight -> kein Probe-Call, Lauf verhält sich unverändert (Exit 0)."""
-    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
-    rc = await _run(_ns(no_preflight=True))
-    assert rc == 0
-    assert wired.wayback.user_status_calls == 0  # kein Probe-Call
-    assert wired.ingest.call_count == 2
-
-
-async def test_preflight_disabled_via_settings_skips_probe(
-    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
-) -> None:
-    """AC4: preflight_enabled=False per ENV -> kein Probe-Call, normaler Lauf."""
-    wired.adapter.refs = [_ref("http://a/p1.pdf")]
-    with patch(
-        "wortlaut.cli.ArchiveSettings",
-        return_value=_archive_settings_ns(
-            preflight_enabled=False, ia_access_key="k-abc-1", ia_secret="s-xyz-2"
-        ),
-    ):
-        rc = await _run(_ns())
-    assert rc == 0
-    assert wired.wayback.user_status_calls == 0  # kein Probe-Call
+    assert "Konfiguration" not in cap.err
     assert wired.ingest.call_count == 1
+    assert "discovered=1 inserted=1 skipped_duplicate=0 fetch_error=0" in cap.out
+
+
+async def test_ingest_never_builds_archivers(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC4: ``_run`` ruft keinen Pre-Flight und baut keine Archivare (Patches
+    auf ``_build_archivers``/``_preflight_ok`` mit Zählern = 0)."""
+    build_archivers = MagicMock()
+    preflight = AsyncMock(return_value=True)
+    with (
+        patch("wortlaut.cli._build_archivers", build_archivers),
+        patch("wortlaut.cli._preflight_ok", preflight),
+    ):
+        wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
+        rc = await _run(_ns())
+    out = capfd.readouterr().out
+    assert rc == 0
+    assert build_archivers.call_count == 0
+    assert preflight.call_count == 0
+    assert "discovered=2 inserted=2 skipped_duplicate=0 fetch_error=0" in out
 
 
 async def test_dry_run_skips_probe(
     wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """AC5: --dry-run -> kein Probe-Call, Dry-Run-Zeile unverändert."""
-    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
-    rc = await _run(_ns(dry_run=True))
+    """AC5 (angepasst, #132 §4.5): --dry-run → kein Probe-Call — seit #132 baut
+    ``ingest`` gar keine Archivare (Zähler = 0), Dry-Run-Zeile wie in §4.2."""
+    build_archivers = MagicMock()
+    preflight = AsyncMock(return_value=True)
+    with (
+        patch("wortlaut.cli._build_archivers", build_archivers),
+        patch("wortlaut.cli._preflight_ok", preflight),
+    ):
+        wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
+        rc = await _run(_ns(dry_run=True))
     cap = capfd.readouterr()
     assert rc == 0
-    assert wired.wayback.user_status_calls == 0  # kein Probe-Call
+    assert build_archivers.call_count == 0
+    assert preflight.call_count == 0
     assert "dry_run=True" in cap.out  # Dry-Run-Zeile wörtlich unverändert
 
 
-# ── #108: Zugangsdaten-Pflicht am Composition-Root (AC16/AC17) ───────────
+# ── #132 §4.2: Summary-Zeile in Feld-Reihenfolge ─────────────────────────
 
 
-async def test_ohne_zugangsdaten_exit_2(
-    wired: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+async def test_summary_line_field_order(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """AC16: keine IA-Zugangsdaten in der ENV -> rc 2, stderr nennt beide
-    ENV-Namen, und es wurde KEIN DIP-Call und KEIN Archiv-Call abgesetzt
-    (Abbruch VOR Engine, Bootstrap, Pre-Flight und discover)."""
-    _credentials_env(monkeypatch, access=None, secret=None)
-    # Der Fixture-Patch liefert Credential-Settings; hier bewusst die ECHTE
-    # Klasse (liest die geleerte ENV), damit der Pflicht-Abbruch greift.
-    with patch("wortlaut.cli.ArchiveSettings", return_value=ArchiveSettings()):
-        wired.adapter.refs = [_ref("http://a/p1.pdf")]
-        rc = await _run(_ns())
+    """AC4: genau eine Summary-Zeile, Felder in der Reihenfolge aus
+    Spec 0132 §4.2: discovered= inserted= skipped_duplicate= fetch_error=
+    (``archive_failed``, ``spans_total`` und ``reasons`` entfallen)."""
+    wired.adapter.refs = [
+        _ref("http://a/p1.pdf"),
+        _ref("http://b/p2.pdf"),
+        _ref("http://c/p3.pdf"),
+    ]
+    wired.ingest.side_effect = [
+        IngestOutcome("inserted", None, "h1"),
+        IngestOutcome("skipped_duplicate", None, "h2"),
+        DipFetchError("net"),
+    ]
+    rc = await _run(_ns())
     cap = capfd.readouterr()
-    assert rc == 2
-    assert "WORTLAUT_ARCHIVE_IA_ACCESS_KEY" in cap.err
-    assert "WORTLAUT_ARCHIVE_IA_SECRET" in cap.err
-    assert wired.adapter.discover_calls == 0  # kein DIP-Call
-    assert wired.adapter.fetch_calls == 0  # kein Ziel-Fetch
-    assert wired.wayback.user_status_calls == 0  # kein Archiv-Call
-    assert wired.wayback.archive_calls == []
-    assert wired.ingest.call_count == 0
-    # Der Abbruch liegt VOR der Engine-Erzeugung — das try/finally (und damit
-    # dispose) wird in diesem Pfad nicht betreten.
-    assert wired.engine.dispose.await_count == 0
+    assert rc == 0
+    assert cap.out == "discovered=3 inserted=1 skipped_duplicate=1 fetch_error=1\n"
+
+
+async def test_summary_reports_dash_when_no_failures(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC8 (angepasst, #132 §4.2): ``reasons=`` entfällt mit dem Archiv — bei
+    einem sauberen Lauf ist die Zeile exakt ``discovered=1 inserted=1
+    skipped_duplicate=0 fetch_error=0`` (statt ``reasons=-``)."""
+    wired.adapter.refs = [_ref("http://a/p1.pdf")]
+    rc = await _run(_ns())
+    out = capfd.readouterr().out
+    assert rc == 0
+    assert out == "discovered=1 inserted=1 skipped_duplicate=0 fetch_error=0\n"
+
+
+async def test_summary_reports_failure_reasons(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """AC8 (angepasst, #132 §4.2): die Gründe-Verteilung entfällt mit dem
+    Archiv im Ingest — die Zeile zählt stattdessen die Ausfall-Klasse
+    ``fetch_error`` pro Quelle."""
+    wired.adapter.refs = [_ref(f"http://a/p{i}.pdf") for i in range(1, 5)]
+    wired.ingest.side_effect = [
+        IngestOutcome("inserted", None, "h1"),
+        IngestOutcome("inserted", None, "h2"),
+        IngestOutcome("skipped_duplicate", None, "h3"),
+        DipFetchError("net"),
+    ]
+    rc = await _run(_ns())
+    out = capfd.readouterr().out
+    assert rc == 0
+    assert out == "discovered=4 inserted=2 skipped_duplicate=1 fetch_error=1\n"
+
+
+# ── #108 (weiter gültig): Dry-Run ohne Zugangsdaten ──────────────────────
 
 
 async def test_dry_run_ohne_zugangsdaten_ok(
     wired: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """AC17: keine IA-Zugangsdaten, ABER --dry-run -> rc 0 (Dry-Run
-    archiviert nicht und braucht keine Zugangsdaten)."""
+    """AC17 (weiter gültig): keine IA-Zugangsdaten, ABER --dry-run -> rc 0
+    (Dry-Run archiviert nicht und braucht keine Zugangsdaten)."""
     _credentials_env(monkeypatch, access=None, secret=None)
-    with patch("wortlaut.cli.ArchiveSettings", return_value=ArchiveSettings()):
-        wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
-        rc = await _run(_ns(dry_run=True))
-    cap = capfd.readouterr()
+    wired.adapter.refs = [_ref("http://a/p1.pdf"), _ref("http://b/p2.pdf")]
+    rc = await _run(_ns(dry_run=True))
+    out = capfd.readouterr().out
     assert rc == 0
-    assert "dry_run=True" in cap.out
-    assert wired.wayback.user_status_calls == 0  # Dry-Run überspringt die Probe
+    assert "dry_run=True" in out
     assert wired.ingest.call_count == 0

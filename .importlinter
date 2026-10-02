@@ -120,3 +120,12 @@ forbidden_modules =
     wortlaut.archive.spn2
 ignore_imports =
     wortlaut.archive.throttle -> wortlaut.archive.archiver
+
+# Spec 0132 §4.1: Erfassen braucht keine Fremdbezeugung (ADR-0009) — ingest spricht nicht mit Archiven.
+[importlinter:contract:ingest-ohne-archiv]
+name = Ingest importiert keinen Archiv-Code
+type = forbidden
+source_modules =
+    wortlaut.pipeline.ingest
+forbidden_modules =
+    wortlaut.archive

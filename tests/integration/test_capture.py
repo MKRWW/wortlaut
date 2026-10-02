@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -195,24 +194,17 @@ async def _ingest(
 ) -> IngestOutcome:
     """Quelle per ``ingest_source`` mit Fixture-Adaptern (Muster ``test_reparse``)."""
     adapter = _EmptyDipAdapter(_raw(raw_bytes, origin))
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=_OkArchiver(_snapshot_url(origin)),
-        archive_today=_OkArchiver("https://archive.ph/snap"),
-        worm=worm,
-    )
+    deps = PipelineDeps(adapter=adapter, worm=worm)  # kein Archivar mehr (#132)
     ref = SourceRef(origin_url=origin, source_type="plenarprotokoll", hint={})
-    # SSRF-Check gemockt: keine echte DNS-Auflösung im Test (R-TEST-03, hermetisch).
-    with patch("wortlaut.archive.archiver.assert_url_allowed"):
-        async with sessions() as session:
-            await session.execute(_ADAPTER_INSERT)
-            await session.commit()
-            return await ingest_source(
-                ref,
-                deps=deps,
-                session=session,
-                rights_basis="amtliches_werk_p5",
-            )
+    async with sessions() as session:
+        await session.execute(_ADAPTER_INSERT)
+        await session.commit()
+        return await ingest_source(
+            ref,
+            deps=deps,
+            session=session,
+            rights_basis="amtliches_werk_p5",
+        )
 
 
 async def _selection(

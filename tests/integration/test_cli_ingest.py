@@ -1,23 +1,22 @@
 """Integration: CLI `ingest` end-to-end gegen echtes Postgres + MinIO (AC9/AC10).
 
-Archiver + DIP-Adapter sind Fakes (R-TEST-03 — kein Live-Netz); Postgres und MinIO
-sind echte Testcontainer. Prueft die CLI-Verdrahtung: Bootstrap (migrate + bucket +
-adapter-seed) -> discover -> ingest_source -> source (ohne Spans, #126) + WORM +
-verify.
+Der DIP-Adapter ist ein Fake (R-TEST-03 — kein Live-Netz); Postgres und MinIO
+sind echte Testcontainer. Seit #132 (ADR-0009) gibt es im Ingest keinen Archiver
+mehr — der Lauf spricht nicht mit dem Internet Archive. Prueft die CLI-Verdrahtung:
+Bootstrap (migrate + bucket + adapter-seed) -> discover -> ingest_source -> source
+(ohne Spans, #126) + WORM + verify.
 """
 
 from __future__ import annotations
 
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy import text
 
-from wortlaut.archive.errors import ArchiveError
 from wortlaut.cli import _run
 from wortlaut.ingest.adapter import RawSource, SourceRef, SpanDraft
 from wortlaut.pipeline.verify import verify_source
@@ -37,27 +36,6 @@ MINIO_IMAGE = (
 )
 
 _NORMALIZED = "Guten Tag."
-
-
-class _FakeArchiver:
-    """Archiver-Fake (kein Live-Netz).
-
-    Nimmt beliebige Konstruktor-Argumente an, weil der Composition-Root den echten
-    Archivern Limiter/Retry-Parameter injiziert (#73).
-    """
-
-    def __init__(self, *_a: object, **_kw: object) -> None:
-        pass
-
-    async def archive(self, origin_url: str) -> str:
-        return "https://web.archive.org/snap"
-
-    async def user_status(self) -> str:
-        """Pre-Flight-Probe (§0b) — der Fake antwortet wie ein gesundes Konto."""
-        return "available=3 processing=0 daily_captures=0/30000"
-
-    async def aclose(self) -> None:
-        pass
 
 
 class _FakeCliAdapter:
@@ -118,26 +96,18 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, dsn: str, cfg: dict[str, str]) -> 
     monkeypatch.setenv("WORTLAUT_WORM_BUCKET", "wortlaut-worm")
     monkeypatch.setenv("WORTLAUT_WORM_SECURE", "false")
     monkeypatch.setenv("WORTLAUT_DIP_API_KEY", "dummy-key")
-    # §16.1: Zugangsdaten-Pflicht am Composition-Root (§4.5). Zusammengesetzt,
-    # nicht ausgeschrieben — ein schlüsselartiges Literal am Stück ist für
-    # python:S6698 und gitleaks von einem echten Fund nicht zu unterscheiden.
-    monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_ACCESS_KEY", "ia-" + "dummy-access")
-    monkeypatch.setenv("WORTLAUT_ARCHIVE_IA_SECRET", "ia-" + "dummy-secret")
+    # Seit #132 (ADR-0009) braucht `ingest` keine Internet-Archive-Zugangsdaten
+    # mehr — die gehören zu `capture` (tests/integration/test_capture.py).
 
 
-def _ingest_args(*, no_preflight: bool = False) -> Namespace:
-    """Wie argparse es liefert — inklusive ``no_preflight`` (#77).
-
-    Default ist ``False``: der Pre-Flight-Probe läuft mit, damit der
-    End-to-End-Test belegt, dass er einen gesunden Lauf nicht stört.
-    """
+def _ingest_args() -> Namespace:
+    """Wie argparse es liefert (``--no-preflight`` entfiel am ingest, #132)."""
     return Namespace(
         since=datetime(2024, 1, 1),
         rights_basis="amtliches_werk_p5",
         limit=None,
         no_migrate=False,  # CLI migriert die frische DB selbst (Bootstrap-Test)
         dry_run=False,
-        no_preflight=no_preflight,
     )
 
 
@@ -149,11 +119,7 @@ async def test_end_to_end_single_source(
     """AC9: CLI ingest -> 1 source + 0 Spans (#126), verify=ok, WORM haelt die Rohbytes."""
     _set_env(monkeypatch, fresh_pg_dsn, minio_config)
 
-    with (
-        patch("wortlaut.cli.DipPlenarprotokollAdapter", _FakeCliAdapter),
-        patch("wortlaut.cli.WaybackArchiver", _FakeArchiver),
-        patch("wortlaut.cli.ArchiveTodayArchiver", _FakeArchiver),
-    ):
+    with patch("wortlaut.cli.DipPlenarprotokollAdapter", _FakeCliAdapter):
         rc = await _run(_ingest_args())
 
     assert rc == 0
@@ -187,95 +153,6 @@ async def test_end_to_end_single_source(
             assert report.status == "ok"
 
         assert await worm.get(raw_ref) == b"%PDF-1.4 wortlaut-cli-int"
-    finally:
-        await engine.dispose()
-
-
-@dataclass
-class _WaybackState:
-    """Test-LOKALER Zustand des Wayback-Fakes — kein globaler/Klassen-Zustand.
-
-    Klassenattribute wuerden zwischen Tests lecken, wenn ein Test mittendrin
-    fehlschlaegt und das Zuruecksetzen nie erreicht wird.
-    """
-
-    fail: bool = True
-    calls: int = 0
-
-
-class _ControllableWayback:
-    """Wayback-Fake, dessen Verhalten der Test ueber sein `state`-Objekt steuert (#73/AC10)."""
-
-    def __init__(self, state: _WaybackState) -> None:
-        self._state = state
-
-    async def archive(self, origin_url: str) -> str:
-        self._state.calls += 1
-        if self._state.fail:
-            raise ArchiveError("wayback", "http_status", status_code=503, transient=True)
-        return "https://web.archive.org/snap-0073-resume"
-
-    async def user_status(self) -> str:
-        """Pre-Flight-Probe (§0b) — der Fake antwortet wie ein gesundes Konto."""
-        return "available=3 processing=0 daily_captures=0/30000"
-
-    async def aclose(self) -> None:
-        pass
-
-
-async def test_archive_failed_retried_on_rerun(
-    fresh_pg_dsn: str,
-    minio_config: dict[str, str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#73/AC10 (Resumability): archive_failed wird nachgeholt, Erfolg danach deduped.
-
-    Lauf 1 (Wayback aus)  -> archive_failed, 0 Zeilen.
-    Lauf 2 (Wayback da)   -> inserted, 1 Zeile.
-    Lauf 3 (Wayback da)   -> skipped_duplicate, OHNE erneuten Archiv-Call
-                             (Dedup greift vor der Archivierung).
-    """
-    _set_env(monkeypatch, fresh_pg_dsn, minio_config)
-    state = _WaybackState(fail=True)
-
-    async def _run_once() -> int:
-        with (
-            patch("wortlaut.cli.DipPlenarprotokollAdapter", _FakeCliAdapter),
-            patch("wortlaut.cli.WaybackArchiver", return_value=_ControllableWayback(state)),
-            patch("wortlaut.cli.ArchiveTodayArchiver", _FakeArchiver),
-        ):
-            # Pre-Flight aus (#77): Lauf 1 fährt ABSICHTLICH mit totem Wayback, um
-            # Resumability zu beweisen. Genau diesen Lauf würde der Pre-Flight in
-            # Produktion (korrekt) schon vorher abbrechen — bliebe er an, prüfte
-            # dieser Test die Schleife darunter nie wieder. Das Endergebnis ist
-            # identisch: 0 Zeilen, Nachholen im nächsten Lauf.
-            return await _run(_ingest_args(no_preflight=True))
-
-    engine = create_async_engine_from(DbSettings(dsn=fresh_pg_dsn))
-    try:
-        sessions = make_sessionmaker(engine)
-
-        async def _source_count() -> int:
-            async with sessions() as session:
-                value = await session.scalar(text("SELECT count(*) FROM source"))
-                assert value is not None
-                return int(value)
-
-        # Lauf 1 — Archiv aus: die Quelle darf NICHT gespeichert werden.
-        assert await _run_once() == 0
-        assert await _source_count() == 0
-        assert state.calls == 1
-
-        # Lauf 2 — Archiv zurueck: derselbe Re-Run holt die Quelle nach.
-        state.fail = False
-        assert await _run_once() == 0
-        assert await _source_count() == 1
-        assert state.calls == 2
-
-        # Lauf 3 — bereits archiviert: Dedup greift VOR dem Archiv-Call.
-        assert await _run_once() == 0
-        assert await _source_count() == 1
-        assert state.calls == 2, "Dedup muss vor der Archivierung greifen"
     finally:
         await engine.dispose()
 
