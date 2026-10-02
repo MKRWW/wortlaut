@@ -1,7 +1,8 @@
 """Integration: ingest_source Pipeline gegen echtes Postgres + MinIO.
 
-Archiver IMMER Fakes (R-TEST-03). Jede Test-Funktion erzeugt eindeutige raw_bytes
-und filtert Assertions auf content_hash — nie global zaehlen.
+Kein Archiv im Ingest mehr (#132, ADR-0009): ``PipelineDeps`` trägt nur noch
+Adapter und WORM. Jede Test-Funktion erzeugt eindeutige raw_bytes und filtert
+Assertions auf content_hash — nie global zaehlen.
 """
 
 from __future__ import annotations
@@ -23,23 +24,6 @@ pytestmark = pytest.mark.integration
 
 
 # ── Fakes ──────────────────────────────────────────────────────────────
-
-
-class CountingArchiver:
-    """Archiver-Fake mit Zaeler. Urspuengliche Archive-URL oder Exception."""
-
-    def __init__(self, url: str | None, *, fail: bool = False) -> None:
-        self.url = url
-        self.fail = fail
-        self.calls = 0
-
-    async def archive(self, origin_url: str) -> str:
-        self.calls += 1
-        if self.fail:
-            raise RuntimeError("fake archive failure")
-        if self.url is None:
-            raise RuntimeError("no url")
-        return self.url
 
 
 class CountingWorm:
@@ -120,6 +104,65 @@ async def _count_for_hash(session: AsyncSession, content_hash: str) -> int:
     return int(result)
 
 
+# ── #132 AC1: Kein Archiv im Ingest ─────────────────────────────────────
+
+
+async def test_ingest_without_archive(
+    pg_dsn: str,
+    db_engine: AsyncEngine,
+    sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+) -> None:
+    """AC1: ``ingest_source`` legt eine neue Quelle an, ohne dass ein Archivar
+    existiert (``PipelineDeps(adapter, worm)``); die Zeile hat
+    ``archive_wayback IS NULL`` und ``archive_today IS NULL`` (wird später per
+    ``capture``/``attest`` bezeugt, ADR-0009)."""
+    await upgrade_head(pg_dsn)
+
+    raw_bytes = b"wortlaut-0132-ac1"
+    raw = RawSource(
+        origin_url="https://example.com/0132-ac1",
+        source_type="rede",
+        raw_bytes=raw_bytes,
+        mime_type="application/pdf",
+        retrieved_at=datetime.now(UTC),
+    )
+    adapter = FakeIngestAdapter(raw)
+    deps = PipelineDeps(adapter=adapter, worm=worm_store)
+    ref = SourceRef(origin_url="https://example.com/0132-ac1", source_type="rede", hint={})
+
+    async with sessions() as session:
+        await _seed_adapter(session, adapter.name, adapter.version)
+        outcome = await ingest_source(
+            ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
+        )
+
+    assert outcome.status == "inserted"
+    assert outcome.source_id is not None
+
+    async with sessions() as session:
+        row = await session.execute(
+            text(
+                "SELECT raw_bytes_ref, archive_wayback IS NULL AS wb_null, "
+                "archive_today IS NULL AS at_null "
+                "FROM source WHERE content_hash = CAST(:h AS text)"
+            ),
+            {"h": outcome.content_hash},
+        )
+        first = row.first()
+        assert first is not None
+        row_dict = dict(first._mapping)
+
+    assert row_dict["raw_bytes_ref"].startswith("s3://")
+    assert "?versionId=" in row_dict["raw_bytes_ref"]
+    assert row_dict["wb_null"] is True  # kein Archiv im Ingest (ADR-0009)
+    assert row_dict["at_null"] is True
+
+    # Bonus: Kette Rohbyte <-> WORM geschlossen
+    roundtrip = await worm_store.get(row_dict["raw_bytes_ref"])
+    assert roundtrip == raw_bytes
+
+
 # ── AC2 ────────────────────────────────────────────────────────────────
 
 
@@ -129,7 +172,8 @@ async def test_new_source_inserted(
     sessions: async_sessionmaker[AsyncSession],
     worm_store: WormStore,
 ) -> None:
-    """AC2: Neue Quelle wird eingefuegt, WORM-Ref + Archivlinks korrekt, Roundtrip bestaetigt."""
+    """AC2: Neue Quelle wird eingefuegt, WORM-Ref korrekt, Roundtrip bestaetigt
+    (Archiv-URLs bleiben NULL — #132)."""
     await upgrade_head(pg_dsn)
 
     raw_bytes = b"wortlaut-0007-ac2"
@@ -141,14 +185,7 @@ async def test_new_source_inserted(
         retrieved_at=datetime.now(UTC),
     )
     adapter = FakeIngestAdapter(raw)
-    wayback = CountingArchiver(url="https://web.archive.org/snap-ac2")
-    atoday = CountingArchiver(url="https://archive.ph/snap-ac2")
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=wayback,
-        archive_today=atoday,
-        worm=worm_store,
-    )
+    deps = PipelineDeps(adapter=adapter, worm=worm_store)
     ref = SourceRef(origin_url="https://example.com/ac2", source_type="rede", hint={})
 
     async with sessions() as session:
@@ -178,8 +215,8 @@ async def test_new_source_inserted(
 
     assert row_dict["raw_bytes_ref"].startswith("s3://")
     assert "?versionId=" in row_dict["raw_bytes_ref"]
-    assert row_dict["archive_wayback"] == "https://web.archive.org/snap-ac2"
-    assert row_dict["archive_today"] == "https://archive.ph/snap-ac2"
+    assert row_dict["archive_wayback"] is None
+    assert row_dict["archive_today"] is None
 
     # Bonus: Kette Rohbyte <-> WORM geschlossen
     roundtrip = await worm_store.get(row_dict["raw_bytes_ref"])
@@ -207,15 +244,8 @@ async def test_duplicate_skipped_no_side_effects(
         retrieved_at=datetime.now(UTC),
     )
     adapter = FakeIngestAdapter(raw)
-    wayback = CountingArchiver(url="https://web.archive.org/snap-ac3")
-    atoday = CountingArchiver(url="https://archive.ph/snap-ac3")
     worm = worm_store
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=wayback,
-        archive_today=atoday,
-        worm=worm,
-    )
+    deps = PipelineDeps(adapter=adapter, worm=worm)
     ref = SourceRef(origin_url="https://example.com/ac3", source_type="rede", hint={})
 
     # Erster Ingest (inserted)
@@ -227,16 +257,9 @@ async def test_duplicate_skipped_no_side_effects(
 
     assert outcome1.status == "inserted"
 
-    # Zweiter Ingest mit zählenden Fakes
-    wayback2 = CountingArchiver(url="https://web.archive.org/snap-ac3b")
-    atoday2 = CountingArchiver(url="https://archive.ph/snap-ac3b")
+    # Zweiter Ingest mit zählendem WORM-Fake
     worm2 = CountingWorm()
-    deps2 = PipelineDeps(
-        adapter=adapter,
-        wayback=wayback2,
-        archive_today=atoday2,
-        worm=worm2,
-    )
+    deps2 = PipelineDeps(adapter=adapter, worm=worm2)
 
     async with sessions() as session:
         outcome2 = await ingest_source(
@@ -244,69 +267,11 @@ async def test_duplicate_skipped_no_side_effects(
         )
 
     assert outcome2.status == "skipped_duplicate"
-    assert wayback2.calls == 0
-    assert atoday2.calls == 0
     assert worm2.put_calls == 0
 
     async with sessions() as session:
         count = await _count_for_hash(session, outcome1.content_hash)
         assert count == 1
-
-
-# ── AC5 ────────────────────────────────────────────────────────────────
-
-
-async def test_partial_archive_inserts(
-    pg_dsn: str,
-    db_engine: AsyncEngine,
-    sessions: async_sessionmaker[AsyncSession],
-    worm_store: WormStore,
-) -> None:
-    """AC5: Wayback OK, archive.today fehlerhaft -> inserted, archive_today IS NULL."""
-    await upgrade_head(pg_dsn)
-
-    raw_bytes = b"wortlaut-0007-ac5"
-    raw = RawSource(
-        origin_url="https://example.com/ac5",
-        source_type="rede",
-        raw_bytes=raw_bytes,
-        mime_type="application/pdf",
-        retrieved_at=datetime.now(UTC),
-    )
-    adapter = FakeIngestAdapter(raw)
-    wayback = CountingArchiver(url="https://web.archive.org/snap-ac5")
-    atoday = CountingArchiver(url=None, fail=True)
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=wayback,
-        archive_today=atoday,
-        worm=worm_store,
-    )
-    ref = SourceRef(origin_url="https://example.com/ac5", source_type="rede", hint={})
-
-    async with sessions() as session:
-        await _seed_adapter(session, adapter.name, adapter.version)
-        outcome = await ingest_source(
-            ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
-        )
-
-    assert outcome.status == "inserted"
-    assert outcome.source_id is not None
-
-    async with sessions() as session:
-        row = await session.execute(
-            text(
-                "SELECT archive_wayback, archive_today FROM source "
-                "WHERE content_hash = CAST(:h AS text)"
-            ),
-            {"h": outcome.content_hash},
-        )
-        first = row.first()
-        assert first is not None
-        row_dict = dict(first._mapping)
-
-    assert row_dict["archive_wayback"] == "https://web.archive.org/snap-ac5"
-    assert row_dict["archive_today"] is None
 
 
 # ── AC6 ────────────────────────────────────────────────────────────────
@@ -331,15 +296,8 @@ async def test_concurrent_ingest_unique_race(
         retrieved_at=datetime.now(UTC),
     )
     adapter = FakeIngestAdapter(raw)
-    wayback = CountingArchiver(url="https://web.archive.org/snap-ac6")
-    atoday = CountingArchiver(url="https://archive.ph/snap-ac6")
     worm = worm_store
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=wayback,
-        archive_today=atoday,
-        worm=worm,
-    )
+    deps = PipelineDeps(adapter=adapter, worm=worm)
     ref = SourceRef(origin_url="https://example.com/ac6", source_type="rede", hint={})
 
     async with sessions() as session:
@@ -361,51 +319,3 @@ async def test_concurrent_ingest_unique_race(
     async with sessions() as session:
         count = await _count_for_hash(session, outcome_a.content_hash)
         assert count == 1
-
-
-# ── #73 AC6: Wayback ist Pflicht, archive.today rettet die Quelle NICHT ──
-
-
-async def test_wayback_hard_fail_blocks_insert(
-    pg_dsn: str,
-    db_engine: AsyncEngine,
-    sessions: async_sessionmaker[AsyncSession],
-    worm_store: WormStore,
-) -> None:
-    """#73/AC6: Wayback faellt aus, archive.today liefert -> archive_failed, KEINE Zeile.
-
-    Codifiziert die Stakeholder-Entscheidung Q2: der Wayback-Snapshot ist der Pflicht-Anker;
-    ein archive.today-Treffer allein reicht als Beweis-Anker NICHT (R-CORE-02).
-    """
-    await upgrade_head(pg_dsn)
-
-    raw_bytes = b"wortlaut-0073-ac6-hard-fail"
-    raw = RawSource(
-        origin_url="https://example.com/0073-ac6",
-        source_type="rede",
-        raw_bytes=raw_bytes,
-        mime_type="application/pdf",
-        retrieved_at=datetime.now(UTC),
-    )
-    adapter = FakeIngestAdapter(raw)
-    wayback = CountingArchiver(url=None, fail=True)
-    atoday = CountingArchiver(url="https://archive.ph/snap-0073-ac6")
-    worm = CountingWorm()
-    deps = PipelineDeps(adapter=adapter, wayback=wayback, archive_today=atoday, worm=worm)
-    ref = SourceRef(origin_url="https://example.com/0073-ac6", source_type="rede", hint={})
-
-    async with sessions() as session:
-        await _seed_adapter(session, adapter.name, adapter.version)
-        outcome = await ingest_source(
-            ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
-        )
-
-    assert outcome.status == "archive_failed"
-    assert outcome.source_id is None
-    # Nichts darf die Provenienz-Huerde passiert haben: kein WORM-Put, keine Zeile.
-    assert worm.put_calls == 0
-    async with sessions() as session:
-        assert await _count_for_hash(session, outcome.content_hash) == 0
-
-    # Der Grund ist strukturiert nach oben durchgereicht (Observability, #73).
-    assert any("wayback" in label for label in outcome.archive_failures)

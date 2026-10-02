@@ -219,6 +219,7 @@ Siehe `docs/engineering.md`. Abnahme im Betrieb: Migration `0008`; `status` zeig
 - `tests/integration/test_reparse.py`
 - `tests/integration/test_attest.py`
 - `tests/integration/test_capture.py`
+- `tests/integration/test_db_schema.py` — nur der in §11 genannte Test entfällt
 
 ## 11. Umsetzungsdetails je Datei
 
@@ -287,6 +288,8 @@ Die neue Summary-Zeile von `ingest` nennen.
 - `tests/unit/test_pipeline_order.py`: `test_archive_total_failure_no_insert`,
   `test_archive_today_soft_fail_inserts`, `test_wayback_hard_fail_blocks_insert`.
 - `tests/integration/test_cli_ingest.py`: `test_archive_failed_retried_on_rerun`.
+- `tests/integration/test_db_schema.py`: `test_source_requires_archive` (prüft genau `chk_archive`;
+  AC2 prüft künftig das Gegenteil). *Nachtrag im Review: fehlte in der ersten Fassung.*
 - `tests/unit/test_cli.py`: `test_circuit_breaker_aborts_run`,
   `test_circuit_breaker_resets_on_success`, `test_circuit_breaker_without_reset_would_abort`
   (der Breaker ist bei `capture` abgesichert) und `test_ohne_zugangsdaten_exit_2` (das Verhalten

@@ -4,7 +4,9 @@ Keine Live-Netz-/DB-Calls: alle Composition-Root-Deps von ``wortlaut.cli``
 werden patcht; ``capture_source`` liefert gebrachte ``CaptureOutcome``s,
 ``list_sources_needing_capture`` gebrachte Pending-Quellen. AC9: dry-run ohne
 Zugangsdaten → Exit 0, echter Lauf ohne Zugangsdaten → Exit 2, Summary-Zeile
-in Feld-Reihenfolge, Exit-Codes (parametrisiert), Circuit-Breaker.
+in Feld-Reihenfolge, Exit-Codes (parametrisiert), Circuit-Breaker. Seit #132
+hier auch die vier Pre-Flight-Tests (übertragen aus ``test_cli.py``, §4.5):
+der Pre-Flight läuft jetzt am ``capture``, nicht am ``ingest``.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
+from wortlaut.archive.errors import ArchiveError
 from wortlaut.archive.settings import ArchiveSettings
 from wortlaut.cli import _run_capture
 from wortlaut.pipeline.capture import CaptureOutcome
@@ -80,10 +83,13 @@ class _FakeWayback:
 
     def __init__(self) -> None:
         self.user_status_calls = 0
+        self.user_status_error: ArchiveError | None = None
         self.closed = 0
 
     async def user_status(self) -> str:
         self.user_status_calls += 1
+        if self.user_status_error is not None:
+            raise self.user_status_error
         return "available=3 processing=0 daily_captures=0/30000"
 
     async def aclose(self) -> None:
@@ -108,6 +114,7 @@ class _FakeArchiveToday:
 def _archive_settings(
     *,
     consecutive_failure_limit: int = 5,
+    preflight_enabled: bool = True,
     ia_access_key: str | None = "k-abc-1",
     ia_secret: str | None = "s-xyz-2",
 ) -> SimpleNamespace:
@@ -120,7 +127,7 @@ def _archive_settings(
         retry_base_delay_seconds=0.0,
         optional_failure_limit=3,
         consecutive_failure_limit=consecutive_failure_limit,
-        preflight_enabled=True,
+        preflight_enabled=preflight_enabled,
         spn2_poll_interval_seconds=1.0,
         spn2_poll_timeout_seconds=1.0,
         attest_max_snapshot_bytes=100 * 1024,
@@ -350,3 +357,77 @@ async def test_circuit_breaker(wired: SimpleNamespace, capfd: pytest.CaptureFixt
     assert wired.capture_source.call_count == 5
     assert "Circuit-Breaker" in cap.err
     assert "pending=7" in cap.out
+
+
+# ── Pre-Flight (übertragen aus tests/unit/test_cli.py, Spec 0132 §4.5) ───
+#
+# Der Pre-Flight läuft seit #132 hier, nicht im Ingest — die vier Tests
+# behalten ihre Aussagen, „discover 0×“ heißt dort „keine Quelle verarbeitet“.
+
+
+async def test_preflight_failure_aborts_before_discover(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """Ausfall: User-Status-Probe wirft ArchiveError (401) → Exit 3, keine
+    Quelle verarbeitet, Ausgabe nennt 'Pre-Flight' samt Grund — VOR der
+    ersten Quelle."""
+    wired.list_pending.return_value = [_candidate(1), _candidate(2)]
+    wired.wayback.user_status_error = ArchiveError(
+        "wayback", "unauthorized", status_code=401, transient=False
+    )
+    rc = await _run_capture(_ns())
+    cap = capfd.readouterr()
+    assert rc == 3
+    assert wired.capture_source.call_count == 0  # keine Quelle verarbeitet
+    assert "Pre-Flight" in cap.err
+    assert "401" in cap.err  # Statuscode bleibt in der Meldung erhalten
+    assert wired.wayback.user_status_calls == 1  # genau ein Probe-Call
+
+
+async def test_preflight_healthy_runs_normally(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """Gesund: Probe liefert die User-Status-Zusammenfassung → der Lauf geht
+    normal weiter (Exit 0, Summary wie bisher). Der User-Status-Call geht
+    genau einmal raus; die Probe setzt KEINEN Capture ab."""
+    wired.list_pending.return_value = [_candidate(1), _candidate(2)]
+    wired.capture_source.side_effect = [_captured(1), _already_archived(2)]
+    rc = await _run_capture(_ns())
+    cap = capfd.readouterr()
+    assert rc == 0
+    assert wired.wayback.user_status_calls == 1  # die Probe ging raus
+    assert wired.capture_source.call_count == 2  # beide Quellen normal verarbeitet
+    assert "pending=2" in cap.out
+
+
+async def test_no_preflight_flag_skips_probe(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """--no-preflight → kein Probe-Call, Lauf verhält sich unverändert
+    (Exit 0)."""
+    wired.list_pending.return_value = [_candidate(1), _candidate(2)]
+    wired.capture_source.side_effect = [_captured(1), _captured(2)]
+    rc = await _run_capture(_ns(no_preflight=True))
+    cap = capfd.readouterr()
+    assert rc == 0
+    assert wired.wayback.user_status_calls == 0  # kein Probe-Call
+    assert wired.capture_source.call_count == 2
+    assert "pending=2" in cap.out
+
+
+async def test_preflight_disabled_via_settings_skips_probe(
+    wired: SimpleNamespace, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """preflight_enabled=False per ENV → kein Probe-Call, normaler Lauf."""
+    wired.list_pending.return_value = [_candidate(1), _candidate(2)]
+    wired.capture_source.side_effect = [_captured(1), _captured(2)]
+    with patch(
+        "wortlaut.cli.ArchiveSettings",
+        return_value=_archive_settings(preflight_enabled=False),
+    ):
+        rc = await _run_capture(_ns())
+    cap = capfd.readouterr()
+    assert rc == 0
+    assert wired.wayback.user_status_calls == 0  # kein Probe-Call
+    assert wired.capture_source.call_count == 2
+    assert "pending=2" in cap.out

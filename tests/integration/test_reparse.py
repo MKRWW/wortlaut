@@ -1,12 +1,13 @@
 """Integration (Spec 0118/#126): reparse_source — Auswahl, Gleichheit,
 Fehlerpfad, Idempotenz, Nebenläufigkeit.
 
-Echtes Postgres (``fresh_pg_dsn``) + MinIO (``worm_store``); Archiver gemockt
-(R-TEST-03). „Quelle ohne Spans“ entsteht per ``ingest_source`` (seither ohne
-Span-Erzeugung, #126) mit Adapter-Unterklassen; ``reparse_source`` wählt nur
-noch attestierte Quellen (ADR-0009) — die Tests attestieren daher jede Quelle
-nach dem Ingest. ``reparse_source`` läuft mit dem echten Fixture-Adapter
-(echtes normalize/parse aus #41) — ``fetch`` bleibt unberührt.
+Echtes Postgres (``fresh_pg_dsn``) + MinIO (``worm_store``); seit #132
+(ADR-0009) kein Archiver im Ingest. „Quelle ohne Spans“ entsteht per
+``ingest_source`` (seither ohne Span-Erzeugung, #126) mit Adapter-Unterklassen;
+``reparse_source`` wählt nur noch attestierte Quellen (ADR-0009) — die Tests
+attestieren daher jede Quelle nach dem Ingest. ``reparse_source`` läuft mit dem
+echten Fixture-Adapter (echtes normalize/parse aus #41) — ``fetch`` bleibt
+unberührt.
 """
 
 from __future__ import annotations
@@ -81,16 +82,6 @@ class _OtherAdapter(_EmptyDipAdapter):
     name = "other-adapter"
 
 
-class _OkArchiver:
-    """Archiver-Fake: liefert eine feste Snapshot-URL (kein Live-Call)."""
-
-    def __init__(self, url: str) -> None:
-        self._url = url
-
-    async def archive(self, origin_url: str) -> str:
-        return self._url
-
-
 def _raw(raw_bytes: bytes) -> RawSource:
     return RawSource(
         origin_url=_ORIGIN,
@@ -102,12 +93,8 @@ def _raw(raw_bytes: bytes) -> RawSource:
 
 
 def _deps(adapter: DipPlenarprotokollAdapter, worm: WormStore) -> PipelineDeps:
-    return PipelineDeps(
-        adapter=adapter,
-        wayback=_OkArchiver("https://web.archive.org/snap"),
-        archive_today=_OkArchiver("https://archive.ph/snap"),
-        worm=worm,
-    )
+    """Kein Archivar mehr im Ingest (#132, ADR-0009)."""
+    return PipelineDeps(adapter=adapter, worm=worm)
 
 
 @pytest.fixture
@@ -149,13 +136,11 @@ async def _ingest_without_spans(
     """Ingest per ``parse → []`` (Quelle mit gespeichertem Text, ohne Spans)."""
     adapter = adapter_cls(_raw(raw_bytes))
     ref = SourceRef(origin_url=_ORIGIN, source_type="plenarprotokoll", hint={})
-    # SSRF-Check gemockt: keine echte DNS-Auflösung im Test (R-TEST-03, hermetisch).
-    with patch("wortlaut.archive.archiver.assert_url_allowed"):
-        async with sessions() as session:
-            await _seed_adapter(session, adapter.name)
-            return await ingest_source(
-                ref, deps=_deps(adapter, worm), session=session, rights_basis="amtliches_werk_p5"
-            )
+    async with sessions() as session:
+        await _seed_adapter(session, adapter.name)
+        return await ingest_source(
+            ref, deps=_deps(adapter, worm), session=session, rights_basis="amtliches_werk_p5"
+        )
 
 
 async def _span_count(sessions: async_sessionmaker[AsyncSession], source_id: UUID) -> int:
@@ -221,11 +206,8 @@ async def test_list_sources_without_spans_selects_only_spanless_same_adapter(
         b = await _ingest_without_spans(sessions, worm_store, fixture, _FixtureDipAdapter)
         c = await _ingest_without_spans(sessions, worm_store, b"ac1-source-c", _OtherAdapter)
         assert a.status == "inserted"
-        assert a.span_count == 0
         assert b.status == "inserted"
-        assert b.span_count == 0
         assert c.status == "inserted"
-        assert c.span_count == 0
         assert a.source_id is not None
         assert b.source_id is not None
         assert c.source_id is not None
@@ -274,62 +256,59 @@ async def test_reparse_yields_same_spans_as_ingest(
     sessions1, engine1 = await _fresh(fresh_pg_dsn)
     sessions2, engine2 = await _fresh(second_pg_dsn)
     try:
-        with patch("wortlaut.archive.archiver.assert_url_allowed"):
-            async with sessions1() as session:
-                await _seed_adapter(session, "dip-api")
-                outcome1 = await ingest_source(
-                    ref,
-                    deps=_deps(_FixtureDipAdapter(_raw(fixture)), worm_store),
-                    session=session,
-                    rights_basis="amtliches_werk_p5",
-                )
-            assert outcome1.status == "inserted"
-            assert outcome1.source_id is not None
-            assert outcome1.span_count == 0  # #126: ingest erzeugt keine Spans mehr (ADR-0009)
+        async with sessions1() as session:
+            await _seed_adapter(session, "dip-api")
+            outcome1 = await ingest_source(
+                ref,
+                deps=_deps(_FixtureDipAdapter(_raw(fixture)), worm_store),
+                session=session,
+                rights_basis="amtliches_werk_p5",
+            )
+        assert outcome1.status == "inserted"
+        assert outcome1.source_id is not None
 
-            async with sessions1() as session:
-                await seed_attestation(session, outcome1.source_id)
-                await session.commit()
-                pending1 = await list_sources_without_spans(session, adapter_name="dip-api")
-            assert len(pending1) == 1
+        async with sessions1() as session:
+            await seed_attestation(session, outcome1.source_id)
+            await session.commit()
+            pending1 = await list_sources_without_spans(session, adapter_name="dip-api")
+        assert len(pending1) == 1
 
-            async with sessions1() as session:
-                re_outcome1 = await reparse_source(
-                    pending1[0],
-                    session=session,
-                    worm=worm_store,
-                    adapter=_FixtureDipAdapter(_raw(fixture)),
-                )
-            assert re_outcome1.status == "reparsed"
+        async with sessions1() as session:
+            re_outcome1 = await reparse_source(
+                pending1[0],
+                session=session,
+                worm=worm_store,
+                adapter=_FixtureDipAdapter(_raw(fixture)),
+            )
+        assert re_outcome1.status == "reparsed"
 
-            async with sessions2() as session:
-                await _seed_adapter(session, "dip-api")
-                outcome2 = await ingest_source(
-                    ref,
-                    deps=_deps(_EmptyDipAdapter(_raw(fixture)), worm_store),
-                    session=session,
-                    rights_basis="amtliches_werk_p5",
-                )
-            assert outcome2.status == "inserted"
-            assert outcome2.source_id is not None
-            assert outcome2.span_count == 0
+        async with sessions2() as session:
+            await _seed_adapter(session, "dip-api")
+            outcome2 = await ingest_source(
+                ref,
+                deps=_deps(_EmptyDipAdapter(_raw(fixture)), worm_store),
+                session=session,
+                rights_basis="amtliches_werk_p5",
+            )
+        assert outcome2.status == "inserted"
+        assert outcome2.source_id is not None
 
-            async with sessions2() as session:
-                await seed_attestation(session, outcome2.source_id)
-                await session.commit()
-                pending = await list_sources_without_spans(session, adapter_name="dip-api")
-            assert len(pending) == 1
-            assert pending[0].source_id == outcome2.source_id
+        async with sessions2() as session:
+            await seed_attestation(session, outcome2.source_id)
+            await session.commit()
+            pending = await list_sources_without_spans(session, adapter_name="dip-api")
+        assert len(pending) == 1
+        assert pending[0].source_id == outcome2.source_id
 
-            async with sessions2() as session:
-                re_outcome = await reparse_source(
-                    pending[0],
-                    session=session,
-                    worm=worm_store,
-                    adapter=_FixtureDipAdapter(_raw(fixture)),
-                )
-            assert re_outcome.status == "reparsed"
-            assert re_outcome.span_count == re_outcome1.span_count
+        async with sessions2() as session:
+            re_outcome = await reparse_source(
+                pending[0],
+                session=session,
+                worm=worm_store,
+                adapter=_FixtureDipAdapter(_raw(fixture)),
+            )
+        assert re_outcome.status == "reparsed"
+        assert re_outcome.span_count == re_outcome1.span_count
 
         db1 = await _span_set(sessions1, outcome1.source_id)
         db2 = await _span_set(sessions2, outcome2.source_id)

@@ -1,10 +1,10 @@
 """Integration (#42/#126): Phase-1-Ingest erfasst die Quelle; die Spans
 entstehen per attest + reparse (ADR-0009) mit amtlicher Zuordnung.
 
-Echtes Postgres + MinIO (Testcontainers); Archiver gemockt (R-TEST-03). Fixture =
-die zweispaltige Protokoll-PDF aus #41 (AfD + SPD + Präsident). Jeder Test bekommt
-eine FRISCHE DB (``fresh_pg_dsn``) — dieselbe Fixture hat denselben content_hash,
-eine geteilte DB würde beim zweiten Ingest dedupen.
+Echtes Postgres + MinIO (Testcontainers); seit #132 (ADR-0009) kein Archiver im
+Ingest. Fixture = die zweispaltige Protokoll-PDF aus #41 (AfD + SPD + Präsident).
+Jeder Test bekommt eine FRISCHE DB (``fresh_pg_dsn``) — dieselbe Fixture hat
+denselben content_hash, eine geteilte DB würde beim zweiten Ingest dedupen.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -74,16 +73,6 @@ class _CountingFixtureDipAdapter(_FixtureDipAdapter):
         return super().parse(raw, normalized)
 
 
-class _OkArchiver:
-    """Archiver-Fake: liefert eine feste Snapshot-URL (kein Live-Call)."""
-
-    def __init__(self, url: str) -> None:
-        self._url = url
-
-    async def archive(self, origin_url: str) -> str:
-        return self._url
-
-
 def _raw(raw_bytes: bytes) -> RawSource:
     return RawSource(
         origin_url=_ORIGIN,
@@ -95,12 +84,8 @@ def _raw(raw_bytes: bytes) -> RawSource:
 
 
 def _deps(adapter: DipPlenarprotokollAdapter, worm: WormStore) -> PipelineDeps:
-    return PipelineDeps(
-        adapter=adapter,
-        wayback=_OkArchiver("https://web.archive.org/snap"),
-        archive_today=_OkArchiver("https://archive.ph/snap"),
-        worm=worm,
-    )
+    """Kein Archivar mehr im Ingest (#132, ADR-0009)."""
+    return PipelineDeps(adapter=adapter, worm=worm)
 
 
 @pytest.fixture
@@ -137,14 +122,11 @@ async def _ingest(
     if adapter is None:
         adapter = _FixtureDipAdapter(_raw(raw_bytes))
     ref = SourceRef(origin_url=_ORIGIN, source_type="plenarprotokoll", hint={})
-    # SSRF-Check gemockt: keine echte DNS-Auflösung im Test (R-TEST-03, hermetisch).
-    # Die Archiver sind ohnehin Fakes (_OkArchiver) — kein Live-Call.
-    with patch("wortlaut.archive.archiver.assert_url_allowed"):
-        async with sessions() as session:
-            await _seed_adapter(session)
-            return await ingest_source(
-                ref, deps=_deps(adapter, worm), session=session, rights_basis="amtliches_werk_p5"
-            )
+    async with sessions() as session:
+        await _seed_adapter(session)
+        return await ingest_source(
+            ref, deps=_deps(adapter, worm), session=session, rights_basis="amtliches_werk_p5"
+        )
 
 
 # ── AC4 (#126): Ingest ohne Spans ────────────────────────────────────────
@@ -160,7 +142,6 @@ async def test_ingest_creates_no_spans(
     adapter = _CountingFixtureDipAdapter(_raw(fixture))
     outcome = await _ingest(fresh_sessions, worm_store, fixture, adapter=adapter)
     assert outcome.status == "inserted"
-    assert outcome.span_count == 0  # #126: ingest erzeugt keine Spans mehr (ADR-0009)
     source_id = outcome.source_id
     assert source_id is not None
 
@@ -173,6 +154,7 @@ async def test_ingest_creates_no_spans(
             text("SELECT normalized_text FROM source WHERE id = CAST(:s AS uuid)"),
             {"s": str(source_id)},
         )
+    # #126: ingest erzeugt keine Spans mehr (ADR-0009)
     assert span_count == 0
     assert normalized is not None
     assert adapter.parse_calls == 0
@@ -192,7 +174,6 @@ async def test_phase1_ingest_creates_spans(
     fixture = _FIXTURE.read_bytes()
     outcome = await _ingest(fresh_sessions, worm_store, fixture)
     assert outcome.status == "inserted"
-    assert outcome.span_count == 0  # #126: ingest erzeugt keine Spans mehr (ADR-0009)
     source_id = outcome.source_id
     assert source_id is not None
 
@@ -315,7 +296,6 @@ async def test_broken_pdf_still_inserts_source_no_spans(
 ) -> None:
     outcome = await _ingest(fresh_sessions, worm_store, b"%PDF- kaputt, kein echtes PDF")
     assert outcome.status == "inserted"  # Provenienz gesichert
-    assert outcome.span_count == 0
 
     async with fresh_sessions() as session:
         span_count = await session.scalar(
@@ -341,7 +321,6 @@ async def test_span_immutable_and_reingest_no_duplicate(
     fixture = _FIXTURE.read_bytes()
     first = await _ingest(fresh_sessions, worm_store, fixture)
     assert first.status == "inserted"
-    assert first.span_count == 0  # #126: ingest erzeugt keine Spans mehr (ADR-0009)
     source_id = first.source_id
     assert source_id is not None
 

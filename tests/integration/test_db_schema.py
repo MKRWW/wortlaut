@@ -113,13 +113,6 @@ async def test_source_content_hash_unique(conn: AsyncConnection) -> None:
         await conn.execute(_SOURCE_INSERT, _source(origin_url="https://example.test/other"))
 
 
-async def test_source_requires_archive(conn: AsyncConnection) -> None:
-    # AC5: ohne Fremdarchiv -> chk_archive-Verletzung; mit einem -> ok.
-    await conn.execute(_ADAPTER_INSERT, _ADAPTER)
-    with pytest.raises(DBAPIError):
-        await conn.execute(_SOURCE_INSERT, _source(archive_wayback=None, archive_today=None))
-
-
 async def test_source_with_one_archive_ok(conn: AsyncConnection) -> None:
     # AC5 (Positivfall): genau ein Fremdarchiv reicht.
     await conn.execute(_ADAPTER_INSERT, _ADAPTER)

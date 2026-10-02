@@ -1,9 +1,12 @@
 """Unit: Pipeline-Ablaufreihenfolge (AC1, AC3, AC4, AC7).
 
 Rein: keine DB, kein Netz. Fakes mit Recorder + mock.patch auf
-source_exists / insert_source / content_hash / archive_all im Modul
-wortlaut.pipeline.ingest — jede Funktion schreibt in die gemeinsame
-``order``-Liste.
+source_exists / insert_source / content_hash im Modul wortlaut.pipeline.ingest
+— jede Funktion schreibt in die gemeinsame ``order``-Liste.
+
+Seit #132 (ADR-0009) hat die Pipeline keinen Archiv-Schritt mehr: die
+Reihenfolge lautet fetch → hash → dedup → WORM-put → insert, und
+``PipelineDeps`` trägt keine Archiver mehr.
 """
 
 from __future__ import annotations
@@ -15,8 +18,6 @@ from uuid import uuid4
 
 import pytest
 
-from wortlaut.archive.archiver import ArchiveResult
-from wortlaut.archive.errors import ArchiveError
 from wortlaut.ingest.adapter import RawSource, SourceRef, SpanDraft
 from wortlaut.pipeline.ingest import PipelineDeps, ingest_source
 
@@ -50,23 +51,6 @@ class FakeAdapter:
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
         self.parse_calls += 1
         return []
-
-
-class FakeArchiver:
-    """Archiver-Fake: archive liefert feste URL oder wirft."""
-
-    def __init__(
-        self, url: str | None = "https://web.archive.org/snap", *, fail: bool = False
-    ) -> None:
-        self._url = url
-        self._fail = fail
-
-    async def archive(self, origin_url: str) -> str:
-        if self._fail:
-            raise RuntimeError("fake archive failure")
-        if self._url is None:
-            raise RuntimeError("no url")
-        return self._url
 
 
 class FakeWorm:
@@ -103,7 +87,7 @@ def _record(order: list[str], label: str, result: object) -> object:
 
 @pytest.mark.asyncio
 async def test_happy_path_call_order() -> None:
-    """AC1: Reihenfolge fetch → hash → dedup → archiv → WORM → insert."""
+    """AC1: Reihenfolge fetch → hash → dedup → WORM → insert (kein Archiv)."""
     order: list[str] = []
     test_hash = "a" * 64
     test_uuid = uuid4()
@@ -117,22 +101,9 @@ async def test_happy_path_call_order() -> None:
     )
     adapter = FakeAdapter(raw=raw, order=order)
     worm = FakeWorm(order=order)
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=FakeArchiver(url="https://web.archive.org/test"),
-        archive_today=FakeArchiver(url="https://archive.ph/test"),
-        worm=worm,
-    )
+    deps = PipelineDeps(adapter=adapter, worm=worm)
     session = AsyncMock()
     ref = SourceRef(origin_url="https://example.com/doc", source_type="rede", hint={})
-
-    async def _mock_archive(*args: object, **kwargs: object) -> ArchiveResult:
-        order.append("archive_all")
-        return ArchiveResult(
-            wayback_url="https://web.archive.org/test",
-            archive_today_url="https://archive.ph/test",
-            failures={},
-        )
 
     with patch("wortlaut.pipeline.ingest.source_exists", new_callable=AsyncMock) as mock_exists:
         mock_exists.side_effect = lambda s, h: _record(order, "source_exists", False)
@@ -140,76 +111,14 @@ async def test_happy_path_call_order() -> None:
             mock_insert.side_effect = lambda s, r: _record(order, "insert_source", test_uuid)
             with patch("wortlaut.pipeline.ingest.content_hash") as mock_hash:
                 mock_hash.side_effect = lambda b: _record(order, "content_hash", test_hash)
-                with patch("wortlaut.pipeline.ingest.archive_all", side_effect=_mock_archive):
-                    outcome = await ingest_source(
-                        ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
-                    )
+                outcome = await ingest_source(
+                    ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
+                )
 
     assert outcome.status == "inserted"
     assert outcome.source_id == test_uuid
     assert outcome.content_hash == test_hash
-    assert order == [
-        "fetch",
-        "content_hash",
-        "source_exists",
-        "archive_all",
-        "worm.put",
-        "insert_source",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_archive_total_failure_no_insert() -> None:
-    """AC4: Beide Archiver werfen -> archive_failed, kein WORM-put, kein insert."""
-    order: list[str] = []
-    test_hash = "b" * 64
-
-    raw = RawSource(
-        origin_url="https://example.com/doc",
-        source_type="rede",
-        raw_bytes=b"test content",
-        mime_type="text/plain",
-        retrieved_at=datetime.now(UTC),
-    )
-    adapter = FakeAdapter(raw=raw, order=order)
-    worm = FakeWorm(order=order)
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=FakeArchiver(fail=True),
-        archive_today=FakeArchiver(fail=True),
-        worm=worm,
-    )
-    session = AsyncMock()
-    ref = SourceRef(origin_url="https://example.com/doc", source_type="rede", hint={})
-
-    async def _mock_archive(*args: object, **kwargs: object) -> ArchiveResult:
-        order.append("archive_all")
-        return ArchiveResult(
-            wayback_url=None,
-            archive_today_url=None,
-            failures={
-                "wayback": ArchiveError("wayback", "http_status", status_code=404),
-                "archive_today": ArchiveError("archive_today", "http_status", status_code=429),
-            },
-        )
-
-    with patch("wortlaut.pipeline.ingest.source_exists", new_callable=AsyncMock) as mock_exists:
-        mock_exists.side_effect = lambda s, h: _record(order, "source_exists", False)
-        with patch("wortlaut.pipeline.ingest.insert_source", new_callable=AsyncMock) as mock_insert:
-            mock_insert.side_effect = lambda s, r: _record(order, "insert_source", uuid4())
-            with patch("wortlaut.pipeline.ingest.content_hash") as mock_hash:
-                mock_hash.side_effect = lambda b: _record(order, "content_hash", test_hash)
-                with patch("wortlaut.pipeline.ingest.archive_all", side_effect=_mock_archive):
-                    outcome = await ingest_source(
-                        ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
-                    )
-
-    assert outcome.status == "archive_failed"
-    assert outcome.source_id is None
-    assert outcome.content_hash == test_hash
-    assert order == ["fetch", "content_hash", "source_exists", "archive_all"]
-    assert worm.put_calls == 0
-    mock_insert.assert_not_called()
+    assert order == ["fetch", "content_hash", "source_exists", "worm.put", "insert_source"]
 
 
 @pytest.mark.asyncio
@@ -229,22 +138,9 @@ async def test_normalize_and_parse_called_phase1() -> None:
     )
     adapter = FakeAdapter(raw=raw, order=order)
     worm = FakeWorm(order=order)
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=FakeArchiver(url="https://web.archive.org/test"),
-        archive_today=FakeArchiver(url="https://archive.ph/test"),
-        worm=worm,
-    )
+    deps = PipelineDeps(adapter=adapter, worm=worm)
     session = AsyncMock()
     ref = SourceRef(origin_url="https://example.com/doc", source_type="rede", hint={})
-
-    async def _mock_archive(*args: object, **kwargs: object) -> ArchiveResult:
-        order.append("archive_all")
-        return ArchiveResult(
-            wayback_url="https://web.archive.org/test",
-            archive_today_url="https://archive.ph/test",
-            failures={},
-        )
 
     with patch("wortlaut.pipeline.ingest.source_exists", new_callable=AsyncMock) as mock_exists:
         mock_exists.side_effect = lambda s, h: _record(order, "source_exists", False)
@@ -252,10 +148,9 @@ async def test_normalize_and_parse_called_phase1() -> None:
             mock_insert.side_effect = lambda s, r: _record(order, "insert_source", test_uuid)
             with patch("wortlaut.pipeline.ingest.content_hash") as mock_hash:
                 mock_hash.side_effect = lambda b: _record(order, "content_hash", test_hash)
-                with patch("wortlaut.pipeline.ingest.archive_all", side_effect=_mock_archive):
-                    await ingest_source(
-                        ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
-                    )
+                await ingest_source(
+                    ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
+                )
 
     # Phase-1: normalize (liefert "") wird genau einmal vor dem Insert aufgerufen
     # (Text einfrieren, Option A). #126: parse wird NICHT mehr gerufen — Spans
@@ -279,12 +174,7 @@ async def test_dedup_skip_no_side_effects() -> None:
     )
     adapter = FakeAdapter(raw=raw, order=order)
     worm = FakeWorm(order=order)
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=FakeArchiver(url="https://web.archive.org/test"),
-        archive_today=FakeArchiver(url="https://archive.ph/test"),
-        worm=worm,
-    )
+    deps = PipelineDeps(adapter=adapter, worm=worm)
     session = AsyncMock()
     ref = SourceRef(origin_url="https://example.com/doc", source_type="rede", hint={})
 
@@ -294,10 +184,9 @@ async def test_dedup_skip_no_side_effects() -> None:
             mock_insert.side_effect = lambda s, r: _record(order, "insert_source", uuid4())
             with patch("wortlaut.pipeline.ingest.content_hash") as mock_hash:
                 mock_hash.side_effect = lambda b: _record(order, "content_hash", test_hash)
-                with patch("wortlaut.pipeline.ingest.archive_all") as mock_archive:
-                    outcome = await ingest_source(
-                        ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
-                    )
+                outcome = await ingest_source(
+                    ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
+                )
 
     assert outcome.status == "skipped_duplicate"
     assert outcome.source_id is None
@@ -305,126 +194,3 @@ async def test_dedup_skip_no_side_effects() -> None:
     assert order == ["fetch", "content_hash", "source_exists"]
     assert worm.put_calls == 0
     mock_insert.assert_not_called()
-    mock_archive.assert_not_called()
-
-
-# ── #73 AC5: Soft-Fail (archive.today) → inserted + WARNING-Log ─────────
-
-
-@pytest.mark.asyncio
-async def test_archive_today_soft_fail_inserts(caplog: pytest.LogCaptureFixture) -> None:
-    """AC5: archive.today schlägt fehl, wayback liefert Snapshot S → Status
-    `inserted`, `archive_today_url=None` (soft), `archive_failures` trägt das
-    Label — und ein WARNING-Log nennt `archive_today` samt Grund."""
-    order: list[str] = []
-    test_hash = "e" * 64
-    test_uuid = uuid4()
-    snapshot = "https://web.archive.org/snap-0073"
-
-    raw = RawSource(
-        origin_url="https://example.com/doc",
-        source_type="rede",
-        raw_bytes=b"test content",
-        mime_type="text/plain",
-        retrieved_at=datetime.now(UTC),
-    )
-    adapter = FakeAdapter(raw=raw, order=order)
-    worm = FakeWorm(order=order)
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=FakeArchiver(url=snapshot),
-        archive_today=FakeArchiver(fail=True),
-        worm=worm,
-    )
-    session = AsyncMock()
-    ref = SourceRef(origin_url="https://example.com/doc", source_type="rede", hint={})
-
-    async def _mock_archive(*args: object, **kwargs: object) -> ArchiveResult:
-        order.append("archive_all")
-        return ArchiveResult(
-            wayback_url=snapshot,
-            archive_today_url=None,
-            failures={
-                "archive_today": ArchiveError("archive_today", "http_status", status_code=429)
-            },
-        )
-
-    with caplog.at_level("WARNING", logger="wortlaut.pipeline.ingest"):
-        with patch("wortlaut.pipeline.ingest.source_exists", new_callable=AsyncMock) as mock_exists:
-            mock_exists.side_effect = lambda s, h: _record(order, "source_exists", False)
-            with patch(
-                "wortlaut.pipeline.ingest.insert_source", new_callable=AsyncMock
-            ) as mock_insert:
-                mock_insert.side_effect = lambda s, r: _record(order, "insert_source", test_uuid)
-                with patch("wortlaut.pipeline.ingest.content_hash") as mock_hash:
-                    mock_hash.side_effect = lambda b: _record(order, "content_hash", test_hash)
-                    with patch("wortlaut.pipeline.ingest.archive_all", side_effect=_mock_archive):
-                        outcome = await ingest_source(
-                            ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
-                        )
-
-    assert outcome.status == "inserted"
-    assert outcome.source_id == test_uuid
-    # Soft-Failure wird geloggt (Dienst + Ziel-URL + Grund/Statuscode)
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert any("archive_today" in r.getMessage() and "429" in r.getMessage() for r in warnings)
-    # Label wird nach oben gereicht — auch im success-Pfad
-    assert outcome.archive_failures == ("archive_today:http_status_429",)
-
-
-# ── #73 AC6: Hard-Fail (wayback) → archive_failed trotz archive.today ───
-
-
-@pytest.mark.asyncio
-async def test_wayback_hard_fail_blocks_insert() -> None:
-    """AC6: wayback schlägt fehl, archive.today liefert eine Snapshot-URL →
-    Status `archive_failed` und KEIN WORM-put / kein Insert (Wayback ist
-    Pflicht, Q2)."""
-    order: list[str] = []
-    test_hash = "f" * 64
-
-    raw = RawSource(
-        origin_url="https://example.com/doc",
-        source_type="rede",
-        raw_bytes=b"test content",
-        mime_type="text/plain",
-        retrieved_at=datetime.now(UTC),
-    )
-    adapter = FakeAdapter(raw=raw, order=order)
-    worm = FakeWorm(order=order)
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=FakeArchiver(fail=True),
-        archive_today=FakeArchiver(url="https://archive.ph/snap-0073"),
-        worm=worm,
-    )
-    session = AsyncMock()
-    ref = SourceRef(origin_url="https://example.com/doc", source_type="rede", hint={})
-
-    async def _mock_archive(*args: object, **kwargs: object) -> ArchiveResult:
-        order.append("archive_all")
-        return ArchiveResult(
-            wayback_url=None,
-            archive_today_url="https://archive.ph/snap-0073",
-            failures={"wayback": ArchiveError("wayback", "http_status", status_code=404)},
-        )
-
-    with patch("wortlaut.pipeline.ingest.source_exists", new_callable=AsyncMock) as mock_exists:
-        mock_exists.side_effect = lambda s, h: _record(order, "source_exists", False)
-        with patch("wortlaut.pipeline.ingest.insert_source", new_callable=AsyncMock) as mock_insert:
-            mock_insert.side_effect = lambda s, r: _record(order, "insert_source", uuid4())
-            with patch("wortlaut.pipeline.ingest.content_hash") as mock_hash:
-                mock_hash.side_effect = lambda b: _record(order, "content_hash", test_hash)
-                with patch("wortlaut.pipeline.ingest.archive_all", side_effect=_mock_archive):
-                    outcome = await ingest_source(
-                        ref, deps=deps, session=session, rights_basis="amtliches_werk_p5"
-                    )
-
-    assert outcome.status == "archive_failed"
-    assert outcome.source_id is None
-    assert outcome.content_hash == test_hash
-    # archive.today-Treffer rettet die Quelle NICHT — kein WORM-put, kein insert
-    assert order == ["fetch", "content_hash", "source_exists", "archive_all"]
-    assert worm.put_calls == 0
-    mock_insert.assert_not_called()
-    assert outcome.archive_failures == ("wayback:http_status_404",)

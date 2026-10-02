@@ -112,15 +112,6 @@ nebenbei macht.
 
 ## Erfassungs-Läufe
 
-**Vorbedingung: Internet-Archive-Zugangsdaten.** Ohne
-`WORTLAUT_ARCHIVE_IA_ACCESS_KEY` und `WORTLAUT_ARCHIVE_IA_SECRET` in der `.env` bricht
-jeder Ingest-Lauf sofort mit **Exit 2** ab, bevor die erste Quelle geholt wird. Das ist
-Absicht: Save Page Now lehnt anonyme Aufrufe mit 401 ab, und ohne Fremdarchivierung
-entsteht kein Insert — ein Lauf ohne Schlüssel würde nur Zeit verbrennen und eine
-irreführende Fehlerliste erzeugen. Die Schlüssel entstehen unter
-`https://archive.org/account/s3.php`; ein Konto genügt, sie sind kostenlos. Nur
-`--dry-run` kommt ohne aus.
-
 Die Läufe folgen einer festen Reihenfolge — **`ingest` → `timestamp` →
 `capture` → `attest` → `reparse`** — und laufen als einmalige Kommandos, nicht als Dienst:
 
@@ -129,40 +120,53 @@ docker compose --env-file /srv/wortlaut/.env -f compose.yml \
   run --rm api python -m wortlaut ingest --since 2024-01-01 --limit 5
 ```
 
-**`ingest` erzeugt keine Spans mehr** — es erfasst nur noch den Hash, das
-WORM-Objekt und den eingefrorenen Text. `spans_total` in der `ingest`-Zeile ist
-deshalb immer 0. Neue Zitate erscheinen erst nach `attest` und `reparse`
-(ADR-0009).
+**`ingest` braucht keine Internet-Archive-Zugangsdaten mehr.** Es holt die
+Quellen, hasht die Rohbytes, legt sie in WORM ab, friert den Text ein und
+trägt sie ein — ohne jeden Kontakt zum Internet Archive (ADR-0009). Ein
+Ausfall des Archivs kostet einen Wiederholungslauf, kein Dokument. Die Zeile
+meldet `discovered=<n> inserted=<n> skipped_duplicate=<n> fetch_error=<n>`;
+`--dry-run` meldet `discovered=<n> dry_run=True` und ändert nichts.
+`ingest` erzeugt keine Spans — es erfasst nur noch den Hash, das WORM-Objekt
+und den eingefrorenen Text. Neue Zitate erscheinen erst nach `attest` und
+`reparse` (ADR-0009).
 
-**Immer erst mit kleinem `--limit`.** Erst wenn ein solcher Lauf `archive_failed=0`
-meldet, lohnt der volle Durchgang. Der Pre-Flight-Check prüft vorab, ob die
-Zugangsdaten akzeptiert werden und der Archivdienst antwortet — er existiert, weil ein
-Vollbackfill schon einmal an einem Ausfall des Internet Archive gescheitert ist und
-dabei 157 Quellen verlor. Er setzt bewusst **keinen** Probe-Capture ab: Ein einzelner
-Capture pro Lauf würde nur ein Tageskontingent verbrauchen und wäre, sobald die
-Probe-URL ihr Limit erreicht, dauerhaft rot — ohne dass mit dem Dienst etwas wäre.
-
-Rechnen Sie mit **rund einer halben Minute pro Quelle**. Save Page Now nimmt einen
-Auftrag nur entgegen und meldet den Abschluss später; der Lauf wartet darauf, weil die
-Snapshot-URL erst dann feststeht.
+**Immer erst mit kleinem `--limit`.** Erst wenn ein solcher Lauf ohne
+Fehlermeldungen durchliefert, lohnt der volle Durchgang.
 
 ```
 docker compose --env-file /srv/wortlaut/.env -f compose.yml \
   run --rm api python -m wortlaut timestamp
 ```
 
-**Dazwischen der Capture:** `capture` holt für den Bestand an, was `attest`
-später bezeugen kann. Der Lauf fragt **zuerst** den CDX-Index (nur lesend)
-und löst einen Save-Page-Now-Auftrag nur aus, wenn dort noch kein byte-gleicher
-Snapshot steht. Danach kühlt eine Quelle nach einem erfolgreichen Capture
-72 Stunden ab (bis der Index nachgezogen hat) und nach einem Fehlschlag
-6 Stunden — beide Abkühlzeiten pro ENV einstellbar. Wie `ingest` braucht
-`capture` die Internet-Archive-Zugangsdaten und bricht ohne sie mit Exit 2 ab;
-der Pre-Flight-Check läuft vor der ersten Anfrage (`--no-preflight` überspringt
-ihn). `failed` ist ein normales, protokolliertes Ergebnis (Exit 0) — der Lauf
-versucht die Quelle nach der Abkühlzeit erneut. Bis zum nächsten Increment
-captured `ingest` selbst noch wie bisher; `capture` ergänzt den Schritt für
-Quellen, die einen Snapshot vermisst. Erst `--dry-run`:
+**Dazwischen der Capture:** `capture` ist der Einzige unter den Erfassungs-
+läufen, der mit dem Internet Archive spricht — und **braucht** deshalb die
+Zugangsdaten: Ohne `WORTLAUT_ARCHIVE_IA_ACCESS_KEY` und
+`WORTLAUT_ARCHIVE_IA_SECRET` in der `.env` bricht jeder Capture-Lauf sofort
+mit **Exit 2** ab, bevor die erste Quelle angefasst wird. Das ist Absicht:
+Save Page Now lehnt anonyme Aufrufe mit 401 ab. Die Schlüssel entstehen unter
+`https://archive.org/account/s3.php`; ein Konto genügt, sie sind kostenlos.
+Nur `--dry-run` kommt ohne aus.
+
+Der Lauf holt für den Bestand an, was `attest` später bezeugen kann: Er fragt
+**zuerst** den CDX-Index (nur lesend) und löst einen Save-Page-Now-Auftrag
+nur aus, wenn dort noch kein byte-gleicher Snapshot steht. Der
+Pre-Flight-Check prüft vor der ersten Anfrage, ob die Zugangsdaten
+akzeptiert werden und der Archivdienst antwortet — er existiert, weil ein
+Vollbackfill schon einmal an einem Ausfall des Internet Archive gescheitert
+ist und dabei 157 Quellen verlor. Er setzt bewusst **keinen** Probe-Capture
+ab: Ein einzelner Capture pro Lauf würde nur ein Tageskontingent verbrauchen
+und wäre, sobald die Probe-URL ihr Limit erreicht, dauerhaft rot — ohne dass
+mit dem Dienst etwas wäre. `--no-preflight` überspringt ihn.
+
+Rechnen Sie mit **rund einer halben Minute pro Quelle**: Save Page Now nimmt
+einen Auftrag nur entgegen und meldet den Abschluss später; der Lauf wartet
+darauf, weil die Snapshot-URL erst dann feststeht. Danach kühlt eine Quelle
+nach einem erfolgreichen Capture 72 Stunden ab (bis der Index nachgezogen
+hat) und nach einem Fehlschlag 6 Stunden — beide Abkühlzeiten pro ENV
+einstellbar. `failed` ist ein normales, protokolliertes Ergebnis (Exit 0) —
+der Lauf versucht die Quelle nach der Abkühlzeit erneut. `ingest` selbst
+captured seit ADR-0009 nicht mehr; `capture` ist der Weg zu einem
+Snapshot. Erst `--dry-run`:
 
 ```
 docker compose --env-file /srv/wortlaut/.env -f compose.yml \
@@ -191,9 +195,28 @@ docker compose --env-file /srv/wortlaut/.env -f compose.yml \
   run --rm api python -m wortlaut reparse --dry-run
 ```
 
-**Vor dem Ausrollen dieser Version muss `attest` gelaufen sein.** Migration
-`0006` verweigert das Upgrade, solange Spans zu unattestierten Quellen existieren
-— die Meldung nennt den Schritt, der vorher zu fahren ist.
+**Der Rückstand ist sichtbar:** `status` zählt die Quellen je Stufe — nur
+lesend, ohne Migration und ohne Netz. *Ungestempelt* heißt: keine
+`source_timestamp`-Zeile; *unattestiert*: keine `source_archive`-Zeile;
+*unattested_capture_failed*: die letzte `capture_request` der Quelle ist
+`failed`; *attested_without_spans*: attestiert, aber noch ohne `span`-Zeile
+(Arbeit für `reparse`).
+
+```
+docker compose --env-file /srv/wortlaut/.env -f compose.yml \
+  run --rm api python -m wortlaut status
+```
+
+Ausgeglichener Zustand (9 Quellen, alle Stufen abgearbeitet):
+
+```
+sources=9 unstamped=0 unattested=0 unattested_capture_failed=0 attested_without_spans=0
+```
+
+**Wer von einem Stand auffrischt, der noch vor Migration `0006` lag,** muss
+vorher `attest` gefahren haben: `0006` verweigert das Upgrade, solange Spans
+zu unattestierten Quellen existieren — die Meldung nennt den Schritt, der
+vorher zu fahren ist.
 
 ## Logs
 

@@ -15,7 +15,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -81,16 +80,6 @@ class _EmptyDipAdapter(_FixtureDipAdapter):
         return []
 
 
-class _OkArchiver:
-    """Archiver-Fake: liefert eine feste Snapshot-URL (kein Live-Call)."""
-
-    def __init__(self, url: str) -> None:
-        self._url = url
-
-    async def archive(self, origin_url: str) -> str:
-        return self._url
-
-
 class _FakeLookup:
     """WaybackLookup-Fake: liefert die Fixture-Bytes (kein Live-Call, R-TEST-03)."""
 
@@ -154,23 +143,16 @@ async def _ingest(
     """Quelle per ``ingest_source`` mit Fixture-Adaptern (Muster ``test_reparse``)."""
     adapter_cls = _FixtureDipAdapter if with_spans else _EmptyDipAdapter
     adapter = adapter_cls(_raw(raw_bytes, origin))
-    deps = PipelineDeps(
-        adapter=adapter,
-        wayback=_OkArchiver("https://web.archive.org/snap"),
-        archive_today=_OkArchiver("https://archive.ph/snap"),
-        worm=worm,
-    )
+    deps = PipelineDeps(adapter=adapter, worm=worm)  # kein Archivar mehr (#132)
     ref = SourceRef(origin_url=origin, source_type="plenarprotokoll", hint={})
-    # SSRF-Check gemockt: keine echte DNS-Auflösung im Test (R-TEST-03, hermetisch).
-    with patch("wortlaut.archive.archiver.assert_url_allowed"):
-        async with sessions() as session:
-            await _seed_adapter(session, adapter.name)
-            return await ingest_source(
-                ref,
-                deps=deps,
-                session=session,
-                rights_basis="amtliches_werk_p5",
-            )
+    async with sessions() as session:
+        await _seed_adapter(session, adapter.name)
+        return await ingest_source(
+            ref,
+            deps=deps,
+            session=session,
+            rights_basis="amtliches_werk_p5",
+        )
 
 
 def _archive_params(source_id: str, origin: str, verified_sha256: str) -> dict[str, object]:
