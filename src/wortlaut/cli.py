@@ -431,6 +431,28 @@ async def _run_attest(args: argparse.Namespace) -> int:
             await _aclose_all(engine.dispose)
 
 
+def _capture_config(
+    args: argparse.Namespace,
+) -> tuple[DbSettings, WormSettings, ArchiveSettings, IaCredentials | None] | None:
+    """Settings aus ENV plus Zugangsdaten-Pflicht für ``capture``; ``None`` ⇒ Exit 2.
+
+    Die Meldung ist bei ``None`` bereits ausgegeben. Zugangsdaten-Pflicht wie beim
+    Ingest (Spec 0108 §4.5): Save Page Now lehnt anonyme Aufrufe mit 401 ab;
+    ``--dry-run`` setzt keine Anfrage und bleibt deshalb erlaubt.
+    """
+    try:
+        db_settings = DbSettings()
+        worm_settings = WormSettings()
+        archive_settings = ArchiveSettings()
+    except Exception as e:
+        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+        return None
+    credentials = _ia_credentials(archive_settings)
+    if _credentials_missing(credentials, dry_run=args.dry_run):
+        return None
+    return db_settings, worm_settings, archive_settings, credentials
+
+
 async def _run_capture(args: argparse.Namespace) -> int:
     """Composition-Root für den Capture-Pass (Spec 0130 §4.4).
 
@@ -441,21 +463,11 @@ async def _run_capture(args: argparse.Namespace) -> int:
     ``capture`` schreibt nur in ``capture_request``, nie in ``source_archive``
     (AC11); archive.today wird nicht verwendet, nur geschlossen (AC10).
     """
-    # 1) Settings aus ENV — Konfiguration ist EIN Block, EIN Rückgabepunkt (Exit 2).
-    try:
-        db_settings = DbSettings()
-        worm_settings = WormSettings()
-        archive_settings = ArchiveSettings()
-    except Exception as e:
-        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+    # 1) Settings und Zugangsdaten — EIN Rückgabepunkt für Exit 2.
+    loaded = _capture_config(args)
+    if loaded is None:
         return 2
-
-    # Zugangsdaten-Pflicht (Muster ingest, Spec 0108 §4.5): Save Page Now
-    # lehnt anonyme Aufrufe mit 401 ab. ``--dry-run`` setzt keine Anfrage
-    # und bleibt deshalb erlaubt.
-    credentials = _ia_credentials(archive_settings)
-    if _credentials_missing(credentials, dry_run=args.dry_run):
-        return 2
+    db_settings, worm_settings, archive_settings, credentials = loaded
 
     engine = create_async_engine_from(db_settings)
     sessions = make_sessionmaker(engine)
