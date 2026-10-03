@@ -74,6 +74,9 @@ class _FakeAdapter:
         self.parse_calls += 1
         return self._drafts
 
+    async def aclose(self) -> None:
+        return None
+
 
 def _draft(text: str = "Zitat aus dem Protokoll") -> SpanDraft:
     return SpanDraft(

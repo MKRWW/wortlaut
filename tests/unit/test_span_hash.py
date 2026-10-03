@@ -48,6 +48,9 @@ class _RaisingAdapter:
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
         return []
 
+    async def aclose(self) -> None:
+        return None
+
 
 def test_safe_normalize_swallows_errors() -> None:  # AC6-Basis: Fehler → None, kein Crash
     raw = RawSource(

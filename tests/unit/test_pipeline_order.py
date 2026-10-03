@@ -52,6 +52,9 @@ class FakeAdapter:
         self.parse_calls += 1
         return []
 
+    async def aclose(self) -> None:
+        return None
+
 
 class FakeWorm:
     """WormStore-Fake: put zeichnet auf, gibt fiktiven Ref zurück."""
