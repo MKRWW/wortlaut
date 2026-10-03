@@ -42,6 +42,8 @@ Datum richtig? Hat der Parser den Tagesordnungspunkt erwischt? Sind die Offsets 
 Die Beiträge laufen dabei am Auge vorbei, aber der Blick liegt auf der Mechanik. Für die
 meisten ist das gut aushaltbar. Wenn nicht: wechsle zu A, ohne Erklärung.
 
+Wer einen eigenen Quell-Adapter beisteuert, lässt ihn offline vom [Konformitäts-Testkit für Adapter](docs/adapter-konformitaet.md) prüfen.
+
 ## Spur C — Inhalt
 
 Wortlaut-Stichproben, juristische Bewertung, Grenzfälle, Umgang mit möglicherweise

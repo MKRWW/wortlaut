@@ -142,3 +142,18 @@ forbidden_modules =
     wortlaut.ingest.dip
     wortlaut.ingest.settings
 allow_indirect_imports = True
+
+# Spec 0098 §4.4: Das Konformitaets-Testkit ist reine Vertragspruefung — kein Datenbank-,
+# Pipeline-, Netzdienst- oder Ausgabe-Code und kein konkreter Adapter, auch nicht indirekt.
+[importlinter:contract:konformitaet-ohne-kern]
+name = Konformitaets-Testkit importiert keinen Kern- oder Adapter-Code
+type = forbidden
+source_modules =
+    wortlaut.ingest.conformance
+forbidden_modules =
+    wortlaut.store
+    wortlaut.pipeline
+    wortlaut.archive
+    wortlaut.timestamp
+    wortlaut.serving
+    wortlaut.ingest.dip
