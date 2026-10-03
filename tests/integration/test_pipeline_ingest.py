@@ -48,6 +48,7 @@ class FakeIngestAdapter:
     name = "fake-adapter"
     version = "1.0.0"
     trust_level = "verified_primary"
+    rights_basis = "amtliches_werk_p5"
 
     def __init__(self, raw: RawSource) -> None:
         self._raw = raw

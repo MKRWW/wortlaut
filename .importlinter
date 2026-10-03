@@ -129,3 +129,16 @@ source_modules =
     wortlaut.pipeline.ingest
 forbidden_modules =
     wortlaut.archive
+
+# Spec 0096 §4.4: Der Composition-Root waehlt Adapter ueber die Registry. Er importiert keine
+# konkrete Adapter-Implementierung und kennt deren Einstellungen nicht. Der indirekte Weg
+# cli -> ingest.registry -> ingest.dip ist gewollt: die Registry ist die eine Stelle, die Adapter kennt.
+[importlinter:contract:cli-kennt-keinen-konkreten-adapter]
+name = CLI importiert keine konkrete Adapter-Implementierung
+type = forbidden
+source_modules =
+    wortlaut.cli
+forbidden_modules =
+    wortlaut.ingest.dip
+    wortlaut.ingest.settings
+allow_indirect_imports = True

@@ -25,9 +25,9 @@ from wortlaut.archive.settings import ArchiveSettings
 from wortlaut.archive.spn2 import IaCredentials
 from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
 from wortlaut.archive.wayback_lookup import HttpWaybackLookup
-from wortlaut.ingest.adapter import AdapterError
-from wortlaut.ingest.dip import DipPlenarprotokollAdapter
-from wortlaut.ingest.settings import DipSettings
+from wortlaut.ingest.adapter import AdapterError, IngestAdapter, SourceRef
+from wortlaut.ingest.registry import DEFAULT_ADAPTER, default_registry
+from wortlaut.ingest.rights import RIGHTS_BASES, resolve_rights_basis
 from wortlaut.pipeline.attest import AttestOutcome, attest_source
 from wortlaut.pipeline.capture import CaptureOutcome, capture_source
 from wortlaut.pipeline.ingest import IngestOutcome, PipelineDeps, ingest_source
@@ -58,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_ingest = subparsers.add_parser("ingest")
     p_ingest.add_argument("--since", required=True, type=datetime.fromisoformat)
-    p_ingest.add_argument("--rights-basis", default="amtliches_werk_p5")
+    p_ingest.add_argument("--adapter", default=DEFAULT_ADAPTER)
+    p_ingest.add_argument("--rights-basis", default=None, choices=RIGHTS_BASES)
     p_ingest.add_argument("--limit", type=int, default=None)
     p_ingest.add_argument("--no-migrate", action="store_true")
     p_ingest.add_argument("--dry-run", action="store_true")
@@ -69,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     p_timestamp.add_argument("--dry-run", action="store_true")
 
     p_reparse = subparsers.add_parser("reparse")
+    p_reparse.add_argument("--adapter", default=DEFAULT_ADAPTER)
     p_reparse.add_argument("--limit", type=int, default=None)
     p_reparse.add_argument("--no-migrate", action="store_true")
     p_reparse.add_argument("--dry-run", action="store_true")
@@ -88,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("serve")
 
+    subparsers.add_parser("adapters")
+
     args = parser.parse_args(argv)
 
     subcommand = getattr(args, "subcommand", None)
@@ -99,10 +103,11 @@ def main(argv: list[str] | None = None) -> int:
         "capture",
         "status",
         "serve",
+        "adapters",
     ):
         print(
             "Fehler: Subcommand 'ingest', 'timestamp', 'reparse', 'attest', "
-            "'capture', 'status' oder 'serve' erforderlich",
+            "'capture', 'status', 'serve' oder 'adapters' erforderlich",
             file=sys.stderr,
         )
         return 2
@@ -119,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_capture(args))
     if subcommand == "status":
         return asyncio.run(_run_status())
+    if subcommand == "adapters":
+        return _run_adapters()
     # uvicorn bringt seinen eigenen Event-Loop mit — kein asyncio.run drumherum.
     return _run_serve()
 
@@ -129,18 +136,18 @@ async def _run(args: argparse.Namespace) -> int:
     Seit #132 (ADR-0009) spricht ``ingest`` nicht mehr mit dem Internet
     Archive: keine Zugangsdaten, kein Archivar-Aufbau, kein Pre-Flight, kein
     Circuit-Breaker. Ein Archiv-Ausfall kostet einen Wiederholungslauf
-    (``capture``), kein Dokument. Exit: 0 = ok, 2 = Konfiguration oder
-    discover-Fehler.
+    (``capture``), kein Dokument. Exit: 0 = ok, 2 = Konfiguration,
+    discover-Fehler oder fehlende/ungültige Rechtsgrundlage.
     """
-    # 1) Settings aus ENV
-    loaded = _load_settings()
-    if loaded is None:
+    # 1) Settings aus ENV + Adapter aus der Registry (ein Rückgabepunkt, Exit 2)
+    setup = _load_run_setup(args.adapter)
+    if setup is None:
         return 2
-    db_settings, worm_settings, dip_settings = loaded
+    db_settings, worm_settings = setup.db, setup.worm
+    adapter = setup.adapter
 
     engine = create_async_engine_from(db_settings)
     sessions = make_sessionmaker(engine)
-    adapter = DipPlenarprotokollAdapter(dip_settings)
     worm = MinioWormStore(worm_settings)
     deps = PipelineDeps(adapter=adapter, worm=worm)
 
@@ -172,17 +179,21 @@ async def _run(args: argparse.Namespace) -> int:
             )
             refs = refs[: args.limit]
 
+        assigned = _assign_rights(refs, adapter, args.rights_basis)
+        if assigned is None:
+            return 2
+
         stats = _RunStats()
 
         if args.dry_run:
             print(f"discovered={len(refs)} dry_run=True")
             return 0
 
-        for ref in refs:
+        for ref, rights_basis in assigned:
             try:
                 async with sessions() as s:
                     outcome = await ingest_source(
-                        ref, deps=deps, session=s, rights_basis=args.rights_basis
+                        ref, deps=deps, session=s, rights_basis=rights_basis
                     )
                 stats.record(outcome)
             except AdapterError as e:
@@ -275,19 +286,16 @@ async def _run_reparse(args: argparse.Namespace) -> int:
     4 = hash_mismatch (Alarm, Muster ``timestamp``), 1 = Fehler bei einer Quelle.
     Kein Netzzugriff: keine Archiver, kein ``fetch``/``discover`` (AC10).
     """
-    # 1) Settings aus ENV — Konfiguration ist EIN Block, EIN Rückgabepunkt (Exit 2).
-    try:
-        db_settings = DbSettings()
-        worm_settings = WormSettings()
-        dip_settings = DipSettings()
-    except Exception as e:
-        print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
+    # 1) Settings aus ENV + Adapter aus der Registry — EIN Rückgabepunkt (Exit 2).
+    setup = _load_run_setup(args.adapter)
+    if setup is None:
         return 2
+    db_settings, worm_settings = setup.db, setup.worm
+    adapter = setup.adapter
 
     engine = create_async_engine_from(db_settings)
     sessions = make_sessionmaker(engine)
     worm = MinioWormStore(worm_settings)
-    adapter = DipPlenarprotokollAdapter(dip_settings)
 
     try:
         # 2) Bootstrap wie ``timestamp``.
@@ -614,15 +622,92 @@ def _config_error(e: Exception) -> str:
     return str(e)
 
 
-def _load_settings() -> tuple[DbSettings, WormSettings, DipSettings] | None:
-    """Alle Settings für ``ingest`` aus der Umgebung; ``None`` ⇒ Meldung ist
-    raus, Aufrufer gibt 2 zurück. Seit #132 keine ``ArchiveSettings`` mehr:
-    ``ingest`` braucht keine Internet-Archive-Zugangsdaten (ADR-0009)."""
+@dataclass(frozen=True)
+class _RunSetup:
+    """Geladene Konfiguration für ``ingest``/``reparse``: Settings plus Adapter."""
+
+    db: DbSettings
+    worm: WormSettings
+    adapter: IngestAdapter
+
+
+def _load_run_setup(adapter_name: str) -> _RunSetup | None:
+    """Registry-Auflösung, Settings und Adapter; ``None`` ⇒ Meldung ist raus,
+    Aufrufer gibt 2 zurück. Unbekannter Name wird **vor** jedem ENV-Zugriff
+    erkannt; die Schritte laufen in einem Block mit genau einem Rückgabepunkt
+    (Spec 0096 §4.2)."""
+    registry = default_registry()
+    entry = registry.get(adapter_name)
+    if entry is None:
+        print(
+            f"Unbekannter Adapter '{adapter_name}' — verfuegbar: {', '.join(registry.names())}",
+            file=sys.stderr,
+        )
+        return None
     try:
-        return DbSettings(), WormSettings(), DipSettings()
+        db_settings = DbSettings()
+        worm_settings = WormSettings()
+        adapter = entry.create()
     except Exception as e:
         print(f"Konfiguration fehlgeschlagen: {_config_error(e)}", file=sys.stderr)
         return None
+    return _RunSetup(db=db_settings, worm=worm_settings, adapter=adapter)
+
+
+def _assign_rights(
+    refs: list[SourceRef], adapter: IngestAdapter, override: str | None
+) -> list[tuple[SourceRef, str]] | None:
+    """Rechtsgrundlage je Quelle auflösen; ``None`` ⇒ Meldung ist raus, Aufrufer
+    gibt 2 zurück. Vorrang (Spec 0096 §4.3): ``override`` > Angabe der Quelle >
+    Default des Adapters. Fehlt ein Wert oder ist er nicht in ``RIGHTS_BASES``,
+    endet der Lauf **vor** der ersten Erfassung — auch im Dry-Run (Alles-oder-
+    nichts). Ein Adapter ohne ``rights_basis``-Attribut gilt als „keine Angabe"."""
+    adapter_default = getattr(adapter, "rights_basis", None)
+    assigned: list[tuple[SourceRef, str]] = []
+    missing: list[SourceRef] = []
+    invalid: list[SourceRef] = []
+    for ref in refs:
+        value = resolve_rights_basis(
+            override=override,
+            per_source=ref.rights_basis,
+            adapter_default=adapter_default,
+        )
+        if value is None:
+            missing.append(ref)
+        elif value not in RIGHTS_BASES:
+            invalid.append(ref)
+        else:
+            assigned.append((ref, value))
+    if missing:
+        print(
+            "rights_basis fehlt fuer "
+            f"{len(missing)} Quelle(n), z. B. {missing[0].origin_url} "
+            f"— Adapter '{adapter.name}' deklariert keine Rechtsgrundlage; nichts erfasst",
+            file=sys.stderr,
+        )
+    if invalid:
+        print(
+            "rights_basis ungueltig fuer "
+            f"{len(invalid)} Quelle(n), z. B. {invalid[0].origin_url}; "
+            f"erlaubt: {', '.join(RIGHTS_BASES)}; nichts erfasst",
+            file=sys.stderr,
+        )
+    if missing or invalid:
+        return None
+    return assigned
+
+
+def _run_adapters() -> int:
+    """Listet die registrierten Adapter (Spec 0096 §4.5); liest keine Settings
+    und ruft ``create()`` nicht auf. Exit 0."""
+    for entry in default_registry().entries():
+        rights_basis = entry.rights_basis if entry.rights_basis is not None else "je Quelle"
+        suffix = "\t(default)" if entry.name == DEFAULT_ADAPTER else ""
+        print(
+            f"{entry.name}\tversion={entry.version}\ttrust_level={entry.trust_level}"
+            f"\trights_basis={rights_basis}{suffix}"
+        )
+    return 0
 
 
 def _credentials_missing(credentials: IaCredentials | None, *, dry_run: bool) -> bool:

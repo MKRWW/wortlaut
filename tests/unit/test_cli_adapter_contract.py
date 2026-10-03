@@ -8,13 +8,14 @@ from argparse import Namespace
 from collections.abc import Iterator, Sequence
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Literal
+from typing import Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from wortlaut.cli import _run
-from wortlaut.ingest.adapter import AdapterError, RawSource, SourceRef, SpanDraft
+from wortlaut.ingest.adapter import AdapterError, IngestAdapter, RawSource, SourceRef, SpanDraft
+from wortlaut.ingest.registry import DEFAULT_ADAPTER, AdapterEntry, AdapterRegistry
 from wortlaut.pipeline.ingest import IngestOutcome
 
 INSERTED: Literal["inserted", "skipped_duplicate"] = "inserted"
@@ -27,6 +28,7 @@ class MinimalAdapter:
     name = "minimal"
     version = "1.0.0"
     trust_level = "verified_primary"
+    rights_basis = "amtliches_werk_p5"
 
     def __init__(self) -> None:
         self.refs: list[SourceRef] = []
@@ -81,6 +83,7 @@ def _ref(number: int) -> SourceRef:
 def _ns(**kw: object) -> Namespace:
     base: dict[str, object] = {
         "since": datetime(2024, 1, 1),
+        "adapter": "dip-api",
         "rights_basis": "amtliches_werk_p5",
         "limit": None,
         "no_migrate": True,
@@ -88,6 +91,22 @@ def _ns(**kw: object) -> Namespace:
     }
     base.update(kw)
     return Namespace(**base)
+
+
+def _registry_with(adapter: object) -> AdapterRegistry:
+    """Registry, deren Default-Eintrag genau ``adapter`` liefert."""
+    typed = cast(IngestAdapter, adapter)
+    registry = AdapterRegistry()
+    registry.register(
+        AdapterEntry(
+            name=DEFAULT_ADAPTER,
+            version=typed.version,
+            trust_level=typed.trust_level,
+            rights_basis=getattr(adapter, "rights_basis", None),
+            create=lambda: typed,
+        )
+    )
+    return registry
 
 
 @pytest.fixture
@@ -102,10 +121,9 @@ def wired() -> Iterator[SimpleNamespace]:
     with (
         patch("wortlaut.cli.DbSettings", return_value=MagicMock(dsn="f")),
         patch("wortlaut.cli.WormSettings", return_value=MagicMock()),
-        patch("wortlaut.cli.DipSettings", return_value=MagicMock()),
         patch("wortlaut.cli.create_async_engine_from", return_value=engine),
         patch("wortlaut.cli.make_sessionmaker", return_value=FakeSessionmaker()),
-        patch("wortlaut.cli.DipPlenarprotokollAdapter", return_value=adapter),
+        patch("wortlaut.cli.default_registry", return_value=_registry_with(adapter)),
         patch("wortlaut.cli.MinioWormStore", return_value=worm),
         patch("wortlaut.cli.upgrade_head", new=AsyncMock()),
         patch("wortlaut.cli.ensure_ingest_adapter", new=AsyncMock()),

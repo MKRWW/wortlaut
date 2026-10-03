@@ -41,12 +41,19 @@ class DipPlenarprotokollAdapter:
     name = "dip-api"
     version = "1.0.0"
     trust_level = "verified_primary"
+    # Plenarprotokolle: amtliches Werk, § 5 UrhG (docs/legal.md §2).
+    rights_basis = "amtliches_werk_p5"
 
     def __init__(self, settings: DipSettings) -> None:
         self._settings = settings
         self._client: httpx.AsyncClient | None = None
         parsed = urlparse(settings.api_base_url)
         self._api_host = parsed.hostname or ""
+
+    @classmethod
+    def from_env(cls) -> DipPlenarprotokollAdapter:
+        """Baut den Adapter aus seinen eigenen ENV-Einstellungen (``WORTLAUT_DIP_*``)."""
+        return cls(DipSettings())
 
     def _client_or_create(self) -> httpx.AsyncClient:
         if self._client is None:
