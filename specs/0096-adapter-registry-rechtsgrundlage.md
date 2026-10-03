@@ -63,7 +63,7 @@ jemand das bestimmt hat. Das ist der Fehler, vor dem #97 warnt. Deshalb kommen b
    Schalter bleibt als bewusste Übersteuerung erhalten (Issue #97 AC2: „wird nichts bestimmt, gilt
    die Angabe des Adapters"), hat aber **keinen** Default mehr. ⚠️ Rechtlich heikel: Wer ihn setzt,
    übersteuert auch eine Quelle, die der Adapter als `ungeklaert` meldet. Alternative wäre, ihn ganz
-   zu streichen oder `ungeklaert` nicht übersteuerbar zu machen — **Stakeholder-Entscheid**.
+   zu streichen oder `ungeklaert` nicht übersteuerbar zu machen. **Entschieden (Stakeholder, 03.10.2026): Der Schalter darf übersteuern, auch `ungeklaert`.**
 7. **Alles oder nichts:** Fehlt die Rechtsgrundlage für **irgendeine** entdeckte Quelle, oder ist
    ein Wert nicht im Enum, endet der Lauf mit Exit 2, **bevor** irgendetwas erfasst wird — auch im
    Dry-Run.
@@ -267,7 +267,7 @@ Exit 0. Liest keine Settings, ruft kein `create()`.
 - R-DATA-03: `rights_basis` bleibt Pflicht; es gibt keinen Pfad mehr, auf dem eine Quelle ohne
   bewusste Angabe als `amtliches_werk_p5` landet. `ungeklaert` wird geschrieben, nie ausgespielt.
 - R-SEC-01: Konfigurationsfehler nennen nur Feldnamen (`_config_error`), nie Werte.
-- Die Übersteuerung per `--rights-basis` ist Stakeholder-Entscheid (§0c Punkt 6).
+- Die Übersteuerung per `--rights-basis` ist eine bewusste Bedienerhandlung und vom Stakeholder so entschieden (§0c Punkt 6).
 
 ## 8. Risiken
 
