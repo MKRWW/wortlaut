@@ -119,7 +119,7 @@ def test_adapter_option_selects_registered_adapter(wired: SimpleNamespace) -> No
     registry = AdapterRegistry()
     registry.register(_entry(wired.dip))
     registry.register(_entry(wired.adapter))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = main(["ingest", "--since", _SINCE, "--adapter", _TEST_ADAPTER, "--no-migrate"])
     assert rc == 0
     assert wired.adapter.discover_calls == 1
@@ -131,7 +131,7 @@ def test_default_adapter_without_option(wired: SimpleNamespace) -> None:
     registry = AdapterRegistry()
     registry.register(_entry(wired.dip))
     registry.register(_entry(wired.adapter))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = main(["ingest", "--since", _SINCE, "--no-migrate"])
     assert rc == 0
     assert wired.dip.discover_calls == 1
@@ -175,7 +175,7 @@ def test_adapters_lists_entries(
     assert "(default)" in out
     registry = AdapterRegistry()
     registry.register(_entry(_RegistryFake(_TEST_ADAPTER, None, [])))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = main(["adapters"])
     out = capfd.readouterr().out
     assert rc == 0
@@ -242,7 +242,7 @@ async def test_adapter_default_used_without_option(wired: SimpleNamespace) -> No
     fake = _RegistryFake(DEFAULT_ADAPTER, _LIZENZ, [_ref("https://a.example/p1.pdf")])
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns())
     assert rc == 0
     assert wired.ingest.call_args_list[0].kwargs["rights_basis"] == _LIZENZ
@@ -253,7 +253,7 @@ async def test_explicit_option_overrides(wired: SimpleNamespace) -> None:
     fake = _RegistryFake(DEFAULT_ADAPTER, _LIZENZ, [_ref("https://a.example/p2.pdf")])
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns(rights_basis="zitat_p51"))
     assert rc == 0
     assert wired.ingest.call_args_list[0].kwargs["rights_basis"] == "zitat_p51"
@@ -266,7 +266,7 @@ async def test_missing_rights_basis_exit_2(
     fake = _RegistryFake(DEFAULT_ADAPTER, None, [_ref("https://a.example/p3.pdf")])
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns())
     err = capfd.readouterr().err
     assert rc == 2
@@ -282,7 +282,7 @@ async def test_missing_rights_basis_dry_run_exit_2(
     fake = _RegistryFake(DEFAULT_ADAPTER, None, [_ref("https://a.example/p4.pdf")])
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns(dry_run=True))
     err = capfd.readouterr().err
     assert rc == 2
@@ -308,7 +308,7 @@ async def test_adapter_without_attribute_exit_2(wired: SimpleNamespace) -> None:
             create=create,
         )
     )
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns())
     assert rc == 2
     assert wired.ingest.call_count == 0
@@ -324,7 +324,7 @@ async def test_one_of_two_missing_exit_2(wired: SimpleNamespace) -> None:
     fake = _RegistryFake(DEFAULT_ADAPTER, None, refs)
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns())
     assert rc == 2
     assert wired.ingest.call_count == 0
@@ -338,7 +338,7 @@ async def test_invalid_rights_basis_exit_2(
     fake = _RegistryFake(DEFAULT_ADAPTER, None, [_ref("https://a.example/p8.pdf", "gemeinfrei")])
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns())
     err = capfd.readouterr().err
     assert rc == 2
@@ -364,7 +364,7 @@ async def test_per_source_values(wired: SimpleNamespace) -> None:
     fake = _RegistryFake(DEFAULT_ADAPTER, None, refs)
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns())
     assert rc == 0
     assert wired.ingest.call_args_list[0].kwargs["rights_basis"] == _AMTLICHES
@@ -378,7 +378,7 @@ async def test_per_source_beats_adapter_default(wired: SimpleNamespace) -> None:
     )
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(_ns())
     assert rc == 0
     assert wired.ingest.call_args_list[0].kwargs["rights_basis"] == _UNGEKLAERT
@@ -390,7 +390,7 @@ def test_cli_has_no_rights_basis_default(wired: SimpleNamespace) -> None:
     fake = _RegistryFake(DEFAULT_ADAPTER, _LIZENZ, [_ref("https://a.example/p12.pdf")])
     registry = AdapterRegistry()
     registry.register(_entry(fake))
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = main(["ingest", "--since", _SINCE, "--no-migrate"])
     assert rc == 0
     assert wired.ingest.call_args_list[0].kwargs["rights_basis"] == _LIZENZ

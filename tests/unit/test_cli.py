@@ -137,7 +137,7 @@ def wired() -> Iterator[SimpleNamespace]:
         patch("wortlaut.cli.WormSettings", return_value=MagicMock()),
         patch("wortlaut.cli.create_async_engine_from", return_value=engine),
         patch("wortlaut.cli.make_sessionmaker", return_value=FakeSessionmaker()),
-        patch("wortlaut.cli.default_registry", return_value=_registry_with(adapter)),
+        patch("wortlaut.cli.registry_from_env", return_value=_registry_with(adapter)),
         patch("wortlaut.cli.MinioWormStore", return_value=worm),
         patch("wortlaut.cli.upgrade_head", new=AsyncMock()),
         patch("wortlaut.cli.ensure_ingest_adapter", new=AsyncMock()),
@@ -214,7 +214,7 @@ async def test_missing_env_exits_nonzero(
 ) -> None:
     """AC5: Pflicht-Config fehlt -> rc != 0, kein ingest_source."""
     with (
-        patch("wortlaut.cli.default_registry", new=registry_module.default_registry),
+        patch("wortlaut.cli.registry_from_env", new=registry_module.default_registry),
         patch("wortlaut.ingest.dip.DipSettings", side_effect=RuntimeError("no api key")),
     ):
         rc = await _run(_ns())

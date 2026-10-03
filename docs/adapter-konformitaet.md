@@ -103,3 +103,5 @@ Beispieldaten gerade so durchlässt, ist damit nicht fachlich gut — das Testki
 Vertrag an den Daten, die man ihm gibt, nicht die Qualität des Parsers. Quelle der
 Zusicherungen ist `src/wortlaut/pipeline/spans.py` (dort ist gemessen, was ein Verstoß im Kern
 auslöst); neue Zusicherungen im Kern müssen hier nachgezogen werden.
+
+Siehe auch: [Adapter aus eigenen Paketen](adapter-plugins.md).
