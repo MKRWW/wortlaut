@@ -166,8 +166,9 @@ async def test_core_value_error_not_swallowed(
         ValueError("Kernfehler"),
         IngestOutcome(INSERTED, None, "h2"),
     ]
+    args = _ns()
     with pytest.raises(ValueError):
-        await _run(_ns())
+        await _run(args)
     assert wired.adapter.aclose_calls == 1
     wired.engine.dispose.assert_awaited_once()
     assert capfd.readouterr().out == ""
