@@ -148,7 +148,7 @@ def wired() -> Iterator[SimpleNamespace]:
         patch("wortlaut.cli.make_sessionmaker", return_value=FakeSessionmaker()),
         patch("wortlaut.cli.MinioWormStore", return_value=FakeWorm()),
         patch("wortlaut.cli.upgrade_head", new=AsyncMock()),
-        patch("wortlaut.cli.default_registry", return_value=_registry_with(adapter)),
+        patch("wortlaut.cli.registry_from_env", return_value=_registry_with(adapter)),
         patch("wortlaut.cli.list_sources_without_spans", new=list_spanless),
         patch("wortlaut.cli.reparse_source", new=reparse),
     ):
@@ -253,7 +253,7 @@ async def test_config_error_exits_two(
     """AC9: Fehlende Konfiguration → Exit 2, Meldung ohne Werte (R-SEC-01)."""
     exc = ValueError("fehlende ENV: WORTLAUT_DIP_API_KEY")
     with (
-        patch("wortlaut.cli.default_registry", new=registry_module.default_registry),
+        patch("wortlaut.cli.registry_from_env", new=registry_module.default_registry),
         patch("wortlaut.ingest.dip.DipSettings", side_effect=exc),
     ):
         rc = await _run_reparse(_ns())

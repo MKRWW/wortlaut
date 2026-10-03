@@ -139,7 +139,7 @@ async def test_end_to_end_single_source(
     """AC9: CLI ingest -> 1 source + 0 Spans (#126), verify=ok, WORM haelt die Rohbytes."""
     _set_env(monkeypatch, fresh_pg_dsn, minio_config)
 
-    with patch("wortlaut.cli.default_registry", return_value=_registry_with(_FakeCliAdapter())):
+    with patch("wortlaut.cli.registry_from_env", return_value=_registry_with(_FakeCliAdapter())):
         rc = await _run(_ingest_args())
 
     assert rc == 0
@@ -253,7 +253,7 @@ async def test_rights_basis_per_source_end_to_end(
     args.rights_basis = None
 
     registry = _registry_with(_PerSourceRightsAdapter())
-    with patch("wortlaut.cli.default_registry", return_value=registry):
+    with patch("wortlaut.cli.registry_from_env", return_value=registry):
         rc = await _run(args)
 
     assert rc == 0

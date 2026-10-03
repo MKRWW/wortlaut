@@ -20,6 +20,9 @@ class AdapterEntry:
 
     ``create`` liest die Einstellungen des Adapters selbst aus der Umgebung —
     der Kern kennt deren Namen nicht.
+
+    ``declared_trust_level`` — nur bei Plugins: deklariertes Vertrauen vor dem Deckel.
+    ``plugin`` — aus fremdem Paket geladen.
     """
 
     name: str
@@ -27,6 +30,8 @@ class AdapterEntry:
     trust_level: str
     rights_basis: str | None
     create: Callable[[], IngestAdapter]
+    declared_trust_level: str | None = None
+    plugin: bool = False
 
 
 class AdapterRegistry:

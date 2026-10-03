@@ -26,7 +26,8 @@ from wortlaut.archive.spn2 import IaCredentials
 from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
 from wortlaut.archive.wayback_lookup import HttpWaybackLookup
 from wortlaut.ingest.adapter import AdapterError, IngestAdapter, SourceRef
-from wortlaut.ingest.registry import DEFAULT_ADAPTER, default_registry
+from wortlaut.ingest.plugins import PluginError, registry_from_env
+from wortlaut.ingest.registry import DEFAULT_ADAPTER, AdapterEntry
 from wortlaut.ingest.rights import RIGHTS_BASES, resolve_rights_basis
 from wortlaut.pipeline.attest import AttestOutcome, attest_source
 from wortlaut.pipeline.capture import CaptureOutcome, capture_source
@@ -636,7 +637,11 @@ def _load_run_setup(adapter_name: str) -> _RunSetup | None:
     Aufrufer gibt 2 zurück. Unbekannter Name wird **vor** jedem ENV-Zugriff
     erkannt; die Schritte laufen in einem Block mit genau einem Rückgabepunkt
     (Spec 0096 §4.2)."""
-    registry = default_registry()
+    try:
+        registry = registry_from_env()
+    except PluginError as e:
+        print(f"Plugin-Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
+        return None
     entry = registry.get(adapter_name)
     if entry is None:
         print(
@@ -699,15 +704,32 @@ def _assign_rights(
 
 def _run_adapters() -> int:
     """Listet die registrierten Adapter (Spec 0096 §4.5); liest keine Settings
-    und ruft ``create()`` nicht auf. Exit 0."""
-    for entry in default_registry().entries():
-        rights_basis = entry.rights_basis if entry.rights_basis is not None else "je Quelle"
-        suffix = "\t(default)" if entry.name == DEFAULT_ADAPTER else ""
-        print(
-            f"{entry.name}\tversion={entry.version}\ttrust_level={entry.trust_level}"
-            f"\trights_basis={rights_basis}{suffix}"
-        )
+    und ruft ``create()`` nicht auf. Exit 0.
+    Plugins werden aus der Umgebung geladen; gedeckelte zeigen ihr deklariertes Vertrauen."""
+    try:
+        registry = registry_from_env()
+    except PluginError as e:
+        print(f"Plugin-Konfiguration fehlgeschlagen: {e}", file=sys.stderr)
+        return 2
+    for entry in registry.entries():
+        print(_adapter_line(entry))
     return 0
+
+
+def _adapter_line(entry: AdapterEntry) -> str:
+    """Eine Listenzeile; gedeckelte Plugins zeigen das deklarierte Vertrauen (Spec 0141 §4.4)."""
+    rights_basis = entry.rights_basis if entry.rights_basis is not None else "je Quelle"
+    trust = entry.trust_level
+    if entry.declared_trust_level is not None and entry.declared_trust_level != entry.trust_level:
+        trust += f" (gedeckelt, deklariert {entry.declared_trust_level})"
+    line = (
+        f"{entry.name}\tversion={entry.version}\ttrust_level={trust}\trights_basis={rights_basis}"
+    )
+    if entry.plugin:
+        line += "\t(plugin)"
+    if entry.name == DEFAULT_ADAPTER:
+        line += "\t(default)"
+    return line
 
 
 def _credentials_missing(credentials: IaCredentials | None, *, dry_run: bool) -> bool:
