@@ -93,8 +93,9 @@ ist. Der DIP-Adapter erfüllt das bereits.
 ### 4.2 Fehler im DIP-Adapter übersetzen
 
 - `fetch`, Host nicht erlaubt: `raise DipHostNotAllowed(...)` statt `ValueError` (Meldung unverändert).
-- `fetch` und `discover`: `httpx.TransportError` und `httpx.TimeoutException` (und deren
-  Unterklassen) werden als `DipFetchError` weitergereicht (`raise … from exc`).
+- `fetch` und `discover`: `httpx.TransportError` (schließt `httpx.TimeoutException` ein — **nicht**
+  beide im selben `except` nennen, sonst Sonar S5713) wird als `DipFetchError` weitergereicht
+  (`raise … from exc`).
 - `discover`: `httpx.HTTPStatusError` aus `raise_for_status()` und eine nicht dekodierbare
   JSON-Antwort (`ValueError` aus `response.json()`) werden als `DipFetchError` weitergereicht.
   Die Meldung nennt Status bzw. „invalid JSON", **nie** den Antworttext (R-SEC-07).

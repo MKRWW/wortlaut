@@ -25,7 +25,8 @@ from wortlaut.archive.settings import ArchiveSettings
 from wortlaut.archive.spn2 import IaCredentials
 from wortlaut.archive.throttle import DisableAfterFailures, RateLimiter
 from wortlaut.archive.wayback_lookup import HttpWaybackLookup
-from wortlaut.ingest.dip import DipFetchError, DipPlenarprotokollAdapter
+from wortlaut.ingest.adapter import AdapterError
+from wortlaut.ingest.dip import DipPlenarprotokollAdapter
 from wortlaut.ingest.settings import DipSettings
 from wortlaut.pipeline.attest import AttestOutcome, attest_source
 from wortlaut.pipeline.capture import CaptureOutcome, capture_source
@@ -160,7 +161,7 @@ async def _run(args: argparse.Namespace) -> int:
         # 3) Discover + Loop
         try:
             refs = list(await adapter.discover(args.since))
-        except (DipFetchError, ValueError) as e:
+        except AdapterError as e:
             print(f"discover fehlgeschlagen: {e}", file=sys.stderr)
             return 2
 
@@ -184,7 +185,7 @@ async def _run(args: argparse.Namespace) -> int:
                         ref, deps=deps, session=s, rights_basis=args.rights_basis
                     )
                 stats.record(outcome)
-            except (DipFetchError, ValueError) as e:
+            except AdapterError as e:
                 stats.fetch_error += 1
                 print(f"fetch_error: {ref.origin_url}: {e}", file=sys.stderr)
 

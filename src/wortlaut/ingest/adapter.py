@@ -3,6 +3,9 @@
 Drei frozen Data-Model-Klassen und ein runtime_checkable Protocol, das
 jede Quell-Adapter-Implementierung erfüllen muss.
 
+Adapter melden Fehler, mit denen sie eine Quelle (oder die Entdeckung)
+gerade nicht liefern, als ``AdapterError`` (oder einer Unterklasse).
+
 Importiert ausschließlich stdlib + typing — kein wortlaut-Eigenimport.
 """
 
@@ -12,6 +15,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
+
+
+class AdapterError(Exception):
+    """Ein Adapter kann eine Quelle (oder die Entdeckung) gerade nicht liefern.
+
+    Der Kern behandelt das als „diese Quelle überspringen" (bei fetch) bzw. als
+    Abbruch der Entdeckung (bei discover) — nie als Programmfehler.
+    """
 
 
 @dataclass(frozen=True)
@@ -63,3 +74,8 @@ class IngestAdapter(Protocol):
     async def fetch(self, ref: SourceRef) -> RawSource: ...
     def normalize(self, raw: RawSource) -> str: ...
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]: ...
+
+    async def aclose(self) -> None:
+        """Wird vom Kern genau einmal am Ende eines Laufs aufgerufen, auch
+        wenn der Lauf mit einem Fehler endet; muss idempotent sein und darf
+        nicht werfen, wenn nichts zu schließen ist."""

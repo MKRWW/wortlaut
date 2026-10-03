@@ -66,6 +66,9 @@ class FakeIngestAdapter:
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
         return []
 
+    async def aclose(self) -> None:
+        return None
+
 
 # ── Helper ─────────────────────────────────────────────────────────────
 

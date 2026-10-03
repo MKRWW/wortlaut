@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from wortlaut.ingest.adapter import RawSource, SourceRef, SpanDraft
+from wortlaut.ingest.adapter import AdapterError, RawSource, SourceRef, SpanDraft
 from wortlaut.ingest.protokoll_parse import (
     extract_text,
     parse_header,
@@ -26,8 +26,13 @@ logger = logging.getLogger(__name__)
 _MAX_PAGES = 1000  # Fail-loud-Wächter gegen Endlos-Pagination
 
 
-class DipFetchError(Exception):
+class DipFetchError(AdapterError):
     """Fetch lieferte etwas anderes als ein direkt geliefertes, gueltiges PDF."""
+
+
+class DipHostNotAllowed(DipFetchError, ValueError):
+    """SSRF-Host-Check: der Host ist nicht erlaubt; zugleich ``ValueError``
+    fuer bestehende Aufrufer."""
 
 
 class DipPlenarprotokollAdapter:
@@ -66,9 +71,16 @@ class DipPlenarprotokollAdapter:
             params = dict(base_params)
             if cursor is not None:
                 params["cursor"] = cursor
-            response = await self._client_or_create().get(url, params=params, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+            try:
+                response = await self._client_or_create().get(url, params=params, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+            except httpx.TransportError as exc:  # schliesst TimeoutException ein
+                raise DipFetchError(f"DIP network error: {type(exc).__name__}") from exc
+            except httpx.HTTPStatusError as exc:
+                raise DipFetchError(f"DIP status {exc.response.status_code}") from exc
+            except ValueError as exc:
+                raise DipFetchError("DIP returned invalid JSON") from exc
             docs: list[dict[str, object]] = data.get("documents", [])
             refs.extend(self._refs_from_documents(docs))
             new_cursor: str | None = data.get("cursor")
@@ -109,11 +121,15 @@ class DipPlenarprotokollAdapter:
         allowed_hosts = {self._api_host, self._settings.pdf_host}
 
         if host not in allowed_hosts:
-            raise ValueError(
+            raise DipHostNotAllowed(
                 f"Host '{host}' is not in the allowed set {allowed_hosts} — refusing fetch"
             )
 
-        response = await self._client_or_create().get(ref.origin_url)
+        try:
+            response = await self._client_or_create().get(ref.origin_url)
+        except httpx.TransportError as exc:  # schliesst TimeoutException ein
+            message = f"network error for {ref.origin_url}: {type(exc).__name__}"
+            raise DipFetchError(message) from exc
 
         if response.is_redirect or 300 <= response.status_code < 400:
             location = response.headers.get("location", "")
