@@ -12,13 +12,15 @@ from __future__ import annotations
 from argparse import Namespace
 from collections.abc import Iterator, Sequence
 from datetime import datetime
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy import text
 
 from wortlaut.cli import _run
-from wortlaut.ingest.adapter import RawSource, SourceRef, SpanDraft
+from wortlaut.ingest.adapter import IngestAdapter, RawSource, SourceRef, SpanDraft
+from wortlaut.ingest.registry import DEFAULT_ADAPTER, AdapterEntry, AdapterRegistry
 from wortlaut.pipeline.verify import verify_source
 from wortlaut.store.adapters import ensure_ingest_adapter
 from wortlaut.store.db import create_async_engine_from, make_sessionmaker
@@ -44,6 +46,7 @@ class _FakeCliAdapter:
     name = "cli-int-adapter"
     version = "1.0.0"
     trust_level = "verified_primary"
+    rights_basis = "amtliches_werk_p5"
 
     def __init__(self, *_a: object, **_kw: object) -> None:
         pass
@@ -104,11 +107,28 @@ def _ingest_args() -> Namespace:
     """Wie argparse es liefert (``--no-preflight`` entfiel am ingest, #132)."""
     return Namespace(
         since=datetime(2024, 1, 1),
+        adapter="dip-api",
         rights_basis="amtliches_werk_p5",
         limit=None,
         no_migrate=False,  # CLI migriert die frische DB selbst (Bootstrap-Test)
         dry_run=False,
     )
+
+
+def _registry_with(adapter: object) -> AdapterRegistry:
+    """Registry, deren Default-Eintrag genau ``adapter`` liefert."""
+    typed = cast(IngestAdapter, adapter)
+    registry = AdapterRegistry()
+    registry.register(
+        AdapterEntry(
+            name=DEFAULT_ADAPTER,
+            version=typed.version,
+            trust_level=typed.trust_level,
+            rights_basis=getattr(adapter, "rights_basis", None),
+            create=lambda: typed,
+        )
+    )
+    return registry
 
 
 async def test_end_to_end_single_source(
@@ -119,7 +139,7 @@ async def test_end_to_end_single_source(
     """AC9: CLI ingest -> 1 source + 0 Spans (#126), verify=ok, WORM haelt die Rohbytes."""
     _set_env(monkeypatch, fresh_pg_dsn, minio_config)
 
-    with patch("wortlaut.cli.DipPlenarprotokollAdapter", _FakeCliAdapter):
+    with patch("wortlaut.cli.default_registry", return_value=_registry_with(_FakeCliAdapter())):
         rc = await _run(_ingest_args())
 
     assert rc == 0
@@ -176,5 +196,82 @@ async def test_ensure_adapter_idempotent(fresh_pg_dsn: str) -> None:
                 {"n": "dup-adapter"},
             )
             assert count == 1
+    finally:
+        await engine.dispose()
+
+
+class _PerSourceRightsAdapter:
+    """Adapter ohne Default-Rechtsgrundlage (#97): jede ``SourceRef`` bringt
+    ihre eigene Angabe mit; ``fetch`` liefert je Quelle verschiedene Rohbytes."""
+
+    name = "per-source-adapter"
+    version = "1.0.0"
+    trust_level = "verified_primary"
+    rights_basis: str | None = None
+
+    def __init__(self, *_a: object, **_kw: object) -> None:
+        pass
+
+    async def discover(self, since: datetime) -> Sequence[SourceRef]:
+        return [
+            SourceRef("https://example.com/qs1", "drucksache", {}, rights_basis="lizenz"),
+            SourceRef("https://example.com/qs2", "drucksache", {}, rights_basis="ungeklaert"),
+        ]
+
+    async def fetch(self, ref: SourceRef) -> RawSource:
+        if ref.origin_url == "https://example.com/qs1":
+            raw = b"%PDF-1.4 per-source qs1"
+        else:
+            raw = b"%PDF-1.4 per-source qs2"
+        return RawSource(
+            origin_url=ref.origin_url,
+            source_type=ref.source_type,
+            raw_bytes=raw,
+            mime_type="application/pdf",
+            retrieved_at=datetime(2024, 1, 15),
+        )
+
+    def normalize(self, raw: RawSource) -> str:
+        return _NORMALIZED
+
+    def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
+        return []
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def test_rights_basis_per_source_end_to_end(
+    fresh_pg_dsn: str,
+    minio_config: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC12: ohne ``--rights-basis`` gilt die je-Quelle-Angabe; beide Werte
+    landen unveraendert in ``source`` (lizenz / ungeklaert)."""
+    _set_env(monkeypatch, fresh_pg_dsn, minio_config)
+    args = _ingest_args()
+    args.rights_basis = None
+
+    registry = _registry_with(_PerSourceRightsAdapter())
+    with patch("wortlaut.cli.default_registry", return_value=registry):
+        rc = await _run(args)
+
+    assert rc == 0
+
+    engine = create_async_engine_from(DbSettings(dsn=fresh_pg_dsn))
+    try:
+        sessions = make_sessionmaker(engine)
+        async with sessions() as session:
+            rows = (
+                await session.execute(
+                    text("SELECT origin_url, rights_basis FROM source ORDER BY origin_url")
+                )
+            ).all()
+        actual: list[tuple[str, str]] = [(row[0], row[1]) for row in rows]
+        expected = [
+            ("https://example.com/qs1", "lizenz"),
+            ("https://example.com/qs2", "ungeklaert"),
+        ]
+        assert actual == expected
     finally:
         await engine.dispose()

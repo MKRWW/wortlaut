@@ -12,11 +12,15 @@ from argparse import Namespace
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from wortlaut.cli import _run_reparse
+from wortlaut.ingest import registry as registry_module
+from wortlaut.ingest.adapter import IngestAdapter
+from wortlaut.ingest.registry import DEFAULT_ADAPTER, AdapterEntry, AdapterRegistry
 from wortlaut.pipeline.reparse import ReparseOutcome
 from wortlaut.store.reparse import SpanlessSource
 
@@ -54,6 +58,7 @@ class FakeDipAdapter:
     name = "dip-api"
     version = "1.0.0"
     trust_level = "verified_primary"
+    rights_basis = "amtliches_werk_p5"
     aclose_calls = 0
 
     async def aclose(self) -> None:
@@ -62,12 +67,29 @@ class FakeDipAdapter:
 
 def _ns(**kw: object) -> Namespace:
     base: dict[str, object] = {
+        "adapter": DEFAULT_ADAPTER,
         "limit": None,
         "no_migrate": True,
         "dry_run": False,
     }
     base.update(kw)
     return Namespace(**base)
+
+
+def _registry_with(adapter: object) -> AdapterRegistry:
+    """Registry, deren Default-Eintrag genau ``adapter`` liefert."""
+    typed = cast(IngestAdapter, adapter)
+    registry = AdapterRegistry()
+    registry.register(
+        AdapterEntry(
+            name=DEFAULT_ADAPTER,
+            version=typed.version,
+            trust_level=typed.trust_level,
+            rights_basis=getattr(adapter, "rights_basis", None),
+            create=lambda: typed,
+        )
+    )
+    return registry
 
 
 def _spanless(i: int) -> SpanlessSource:
@@ -122,12 +144,11 @@ def wired() -> Iterator[SimpleNamespace]:
     with (
         patch("wortlaut.cli.DbSettings", return_value=MagicMock(dsn="f")),
         patch("wortlaut.cli.WormSettings", return_value=MagicMock()),
-        patch("wortlaut.cli.DipSettings", return_value=MagicMock(api_key="k")),
         patch("wortlaut.cli.create_async_engine_from", return_value=engine),
         patch("wortlaut.cli.make_sessionmaker", return_value=FakeSessionmaker()),
         patch("wortlaut.cli.MinioWormStore", return_value=FakeWorm()),
         patch("wortlaut.cli.upgrade_head", new=AsyncMock()),
-        patch("wortlaut.cli.DipPlenarprotokollAdapter", return_value=adapter),
+        patch("wortlaut.cli.default_registry", return_value=_registry_with(adapter)),
         patch("wortlaut.cli.list_sources_without_spans", new=list_spanless),
         patch("wortlaut.cli.reparse_source", new=reparse),
     ):
@@ -231,7 +252,10 @@ async def test_config_error_exits_two(
 ) -> None:
     """AC9: Fehlende Konfiguration → Exit 2, Meldung ohne Werte (R-SEC-01)."""
     exc = ValueError("fehlende ENV: WORTLAUT_DIP_API_KEY")
-    with patch("wortlaut.cli.DipSettings", side_effect=exc):
+    with (
+        patch("wortlaut.cli.default_registry", new=registry_module.default_registry),
+        patch("wortlaut.ingest.dip.DipSettings", side_effect=exc),
+    ):
         rc = await _run_reparse(_ns())
     assert rc == 2
     assert "Konfiguration" in capfd.readouterr().err

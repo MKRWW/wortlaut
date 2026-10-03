@@ -84,7 +84,13 @@ async def _mandate(session: AsyncSession, speaker_id: UUID, party: str) -> UUID:
     return UUID(str(mid))
 
 
-async def _source(session: AsyncSession, content_hash: str, ref: str, normalized: str) -> UUID:
+async def _source(
+    session: AsyncSession,
+    content_hash: str,
+    ref: str,
+    normalized: str,
+    rights_basis: str = "amtliches_werk_p5",
+) -> UUID:
     await session.execute(
         text(
             "INSERT INTO ingest_adapter (name, version, trust_level) "
@@ -102,7 +108,7 @@ async def _source(session: AsyncSession, content_hash: str, ref: str, normalized
             archive_today=None,
             origin_url="https://dserver.bundestag.de/btp/20/2008800/2008800.pdf",
             source_type="plenarprotokoll",
-            rights_basis="amtliches_werk_p5",
+            rights_basis=rights_basis,
             adapter_name="dip-api",
             adapter_version="1.0.0",
             byte_size=100,
@@ -516,3 +522,52 @@ async def test_source_evidence_shows_attesting_snapshot(
     assert body["attestation_snapshot_url"] != body["archive_wayback"]
     assert body["attestation_snapshot_at"] is not None
     assert body["attestation_verified_sha256"] == digest
+
+
+# ── Spec 0096 (AC13): Rechtsgrundlage als harter Server-Filter ─────────────
+
+_PROBE_WORD = "Rechtsgrundlagenprobe"
+
+
+@pytest.mark.parametrize(
+    ("rights_basis", "served"),
+    [("lizenz", True), ("ungeklaert", False)],
+)
+async def test_rights_basis_gates_serving(
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    worm_store: WormStore,
+    seed_attestation: SeedAttestation,
+    rights_basis: str,
+    served: bool,
+) -> None:
+    """AC13: attestierte Quelle D (eigene Rohbytes im WORM) mit je-Quelle-
+    Rechtsgrundlage und einem Span, der das Pruefwort nur hier enthaelt.
+    ``lizenz`` wird ausgeliefert (Suche + Detail + Verify + Beleg: 200),
+    ``ungeklaert`` nie (Suche leer, Detail/Verify/Beleg: 404)."""
+    client, _ = await _client(fresh_sessions, worm_store, seed_attestation)
+
+    v_d = f"Dieser Satz dient als {_PROBE_WORD} fuer Quelle D."
+    raw_d = v_d.encode("utf-8")
+    hash_d = hashlib.sha256(raw_d).hexdigest()
+    day5 = date(2024, 7, 5)
+    async with fresh_sessions() as session:
+        ref_d = await worm_store.put(hash_d, raw_d, content_type="text/plain")
+        src_d = await _source(session, hash_d, ref_d, v_d, rights_basis=rights_basis)
+        await seed_attestation(session, src_d)
+        spk_d = await _speaker(session, "Dr. Quelle D")
+        man_d = await _mandate(session, spk_d, "X")
+        span_d = await _span(
+            session,
+            _SpanSpec(src_d, spk_d, man_d, v_d, v_d, v_d, day5, _LOCATOR_TOP3),
+        )
+
+    expected_status = 200 if served else 404
+    async with client:
+        search = (await client.get("/v1/search", params={"q": _PROBE_WORD})).json()
+        assert search["total"] == (1 if served else 0)
+        detail = await client.get(f"/v1/spans/{span_d}")
+        assert detail.status_code == expected_status
+        verify = await client.get(f"/v1/spans/{span_d}/verify")
+        assert verify.status_code == expected_status
+        source = await client.get(f"/v1/sources/{src_d}")
+        assert source.status_code == expected_status

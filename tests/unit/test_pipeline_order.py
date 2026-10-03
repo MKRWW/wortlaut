@@ -30,6 +30,7 @@ class FakeAdapter:
     name = "fake-adapter"
     version = "1.0.0"
     trust_level = "verified_primary"
+    rights_basis = "amtliches_werk_p5"
     parse_calls = 0
     normalize_calls = 0
 

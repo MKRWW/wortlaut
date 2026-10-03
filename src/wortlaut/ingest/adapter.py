@@ -3,6 +3,8 @@
 Drei frozen Data-Model-Klassen und ein runtime_checkable Protocol, das
 jede Quell-Adapter-Implementierung erfüllen muss.
 
+Der Adapter deklariert die Rechtsgrundlage seiner Quellen (``rights_basis``, #97).
+
 Adapter melden Fehler, mit denen sie eine Quelle (oder die Entdeckung)
 gerade nicht liefern, als ``AdapterError`` (oder einer Unterklasse).
 
@@ -32,6 +34,8 @@ class SourceRef:
     origin_url: str
     source_type: str
     hint: dict[str, object]
+    # Rechtsgrundlage dieser Quelle; übersteuert ``IngestAdapter.rights_basis`` (#97).
+    rights_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,13 @@ class IngestAdapter(Protocol):
     name: str
     version: str
     trust_level: str  # 'verified_primary' | 'secondary' | 'low'
+
+    @property
+    def rights_basis(self) -> str | None:
+        """Rechtsgrundlage aller Quellen dieses Adapters (Wert aus ``RIGHTS_BASES``);
+        ``None`` heißt: jede ``SourceRef`` bringt ihre eigene mit. Ohne beides
+        verweigert der Kern die Erfassung (#97)."""
+        ...
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]: ...
     async def fetch(self, ref: SourceRef) -> RawSource: ...

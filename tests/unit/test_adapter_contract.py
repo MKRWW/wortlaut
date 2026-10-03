@@ -15,7 +15,7 @@ from wortlaut.ingest.adapter import (
     SourceRef,
     SpanDraft,
 )
-from wortlaut.ingest.dip import DipFetchError, DipHostNotAllowed
+from wortlaut.ingest.dip import DipFetchError, DipHostNotAllowed, DipPlenarprotokollAdapter
 
 _CLI_SOURCE = (Path(__file__).resolve().parents[2] / "src" / "wortlaut" / "cli.py").read_text(
     encoding="utf-8"
@@ -24,6 +24,32 @@ _CLI_SOURCE = (Path(__file__).resolve().parents[2] / "src" / "wortlaut" / "cli.p
 
 class _WithoutAclose:
     """Probe: erfüllt das Protocol bis auf ``aclose``."""
+
+    name = "probe"
+    version = "1.0.0"
+    trust_level = "verified_primary"
+    rights_basis = "lizenz"
+
+    async def discover(self, since: datetime) -> Sequence[SourceRef]:
+        return []
+
+    async def fetch(self, ref: SourceRef) -> RawSource:
+        raise AssertionError("not used")
+
+    def normalize(self, raw: RawSource) -> str:
+        return ""
+
+    def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
+        return []
+
+
+class _WithAclose(_WithoutAclose):
+    async def aclose(self) -> None:
+        return None
+
+
+class _WithoutRightsBasis:
+    """Probe: erfüllt das Protocol bis auf ``rights_basis``."""
 
     name = "probe"
     version = "1.0.0"
@@ -41,8 +67,6 @@ class _WithoutAclose:
     def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
         return []
 
-
-class _WithAclose(_WithoutAclose):
     async def aclose(self) -> None:
         return None
 
@@ -75,6 +99,19 @@ def test_protocol_requires_aclose() -> None:
     assert isinstance(complete, IngestAdapter) is True
 
 
+# ── AC8: Rechtsgrundlage im Vertrag (Spec 0096) ─────────────────────────
+
+
+def test_protocol_declares_rights_basis() -> None:
+    """AC8: ``IngestAdapter`` deklariert ``rights_basis``; ``SourceRef`` hat
+    ``rights_basis`` mit Default ``None``; der DIP-Adapter deklariert
+    ``amtliches_werk_p5``."""
+    without = _WithoutRightsBasis()
+    assert isinstance(without, IngestAdapter) is False
+    assert SourceRef("u", "t", {}).rights_basis is None
+    assert DipPlenarprotokollAdapter.rights_basis == "amtliches_werk_p5"
+
+
 # ── AC2: Fehlerbasis ────────────────────────────────────────────────────
 
 
@@ -90,8 +127,8 @@ def test_error_hierarchy() -> None:
 
 
 def test_cli_catches_only_adapter_error() -> None:
-    """AC3: ``cli.py`` importiert aus ``wortlaut.ingest.dip`` nur den Adapter
-    selbst; kein ``except`` nennt ``DipFetchError`` oder ``ValueError``."""
+    """AC3: ``cli.py`` importiert nichts aus ``wortlaut.ingest.dip`` (#96);
+    kein ``except`` nennt ``DipFetchError`` oder ``ValueError``."""
     tree = ast.parse(_CLI_SOURCE)
 
     dip_imports = [
@@ -100,7 +137,7 @@ def test_cli_catches_only_adapter_error() -> None:
         if isinstance(node, ast.ImportFrom) and node.module == "wortlaut.ingest.dip"
         for alias in node.names
     ]
-    assert set(dip_imports) == {"DipPlenarprotokollAdapter"}
+    assert dip_imports == []
 
     caught = [
         name
