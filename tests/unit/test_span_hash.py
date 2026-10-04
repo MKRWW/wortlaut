@@ -35,6 +35,8 @@ class _RaisingAdapter:
     name = "raising"
     version = "1.0.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis = "amtliches_werk_p5"
 
     async def fetch(self, ref: SourceRef) -> RawSource:

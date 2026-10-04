@@ -31,6 +31,8 @@ class _GoodAdapter:
     name = "gut"
     version = "1.0.0"
     trust_level = "secondary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis: str | None = "lizenz"
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]:
@@ -281,11 +283,46 @@ class _WithoutAclose:
     name = "gut"
     version = "1.0.0"
     trust_level = "secondary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis: str | None = "lizenz"
     discover = _GoodAdapter.discover
     fetch = _GoodAdapter.fetch
     normalize = _GoodAdapter.normalize
     parse = _GoodAdapter.parse
+
+
+class _BadParliamentSpaces(_GoodAdapter):
+    """parliament enthält Leerzeichen."""
+
+    parliament = "Landtag Brandenburg"
+
+
+class _EmptyParliament(_GoodAdapter):
+    """parliament ist leer."""
+
+    parliament = ""
+
+
+class _EmptyMandateRole(_GoodAdapter):
+    """mandate_role ist leer."""
+
+    mandate_role = ""
+
+
+class _WithoutParliamentAttr:
+    """Adapter ohne parliament-Attribut."""
+
+    name = "gut"
+    version = "1.0.0"
+    trust_level = "secondary"
+    mandate_role = "MdB"
+    rights_basis: str | None = "lizenz"
+    discover = _GoodAdapter.discover
+    fetch = _GoodAdapter.fetch
+    normalize = _GoodAdapter.normalize
+    parse = _GoodAdapter.parse
+    aclose = _GoodAdapter.aclose
 
 
 _BROKEN: list[tuple[type[object], str]] = [
@@ -312,6 +349,10 @@ _BROKEN: list[tuple[type[object], str]] = [
     (_EmptyPermalink, "span_permalink"),
     (_AcloseRaisesSecondTime, "aclose"),
     (_WithoutAclose, "protocol"),
+    (_BadParliamentSpaces, "parliament"),
+    (_EmptyParliament, "parliament"),
+    (_EmptyMandateRole, "parliament"),
+    (_WithoutParliamentAttr, "protocol"),
 ]
 
 

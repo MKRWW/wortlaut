@@ -28,6 +28,8 @@ _MEMBERS: tuple[str, ...] = (
     "name",
     "version",
     "trust_level",
+    "parliament",
+    "mandate_role",
     "rights_basis",
     "discover",
     "fetch",
@@ -37,6 +39,7 @@ _MEMBERS: tuple[str, ...] = (
 )
 
 _MIME_RE = re.compile(r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$")
+PARLIAMENT_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,14 @@ def _check_identity(adapter: IngestAdapter, findings: _Findings) -> None:
     if adapter.trust_level not in TRUST_LEVELS:
         findings.add(
             "identity", f"trust_level nicht in TRUST_LEVELS: {_short(adapter.trust_level)}"
+        )
+    parliament = adapter.parliament
+    if not isinstance(parliament, str) or not PARLIAMENT_RE.match(parliament):
+        findings.add("parliament", f"parliament ist kein Kurzname: {_short(parliament)}")
+    role = adapter.mandate_role
+    if not isinstance(role, str) or not role:
+        findings.add(
+            "parliament", f"mandate_role ist keine nicht-leere Zeichenkette: {_short(role)}"
         )
     basis = adapter.rights_basis
     if basis is not None and basis not in RIGHTS_BASES:

@@ -30,6 +30,8 @@ class _ProbeAdapter:
     name = "probe"
     version = "1.0.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis: str | None = _LIZENZ
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]:

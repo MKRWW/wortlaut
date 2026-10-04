@@ -46,6 +46,8 @@ class _FakeCliAdapter:
     name = "cli-int-adapter"
     version = "1.0.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis = "amtliches_werk_p5"
 
     def __init__(self, *_a: object, **_kw: object) -> None:
@@ -207,6 +209,8 @@ class _PerSourceRightsAdapter:
     name = "per-source-adapter"
     version = "1.0.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis: str | None = None
 
     def __init__(self, *_a: object, **_kw: object) -> None:

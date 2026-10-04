@@ -277,8 +277,8 @@ async def test_speaker_get_or_create_idempotent(
     worm_store: WormStore,
 ) -> None:
     async with fresh_sessions() as session:
-        first = await resolve_or_create_speaker(session, "Dr. Testname")
-        second = await resolve_or_create_speaker(session, "Dr. Testname")
+        first = await resolve_or_create_speaker(session, "Dr. Testname", parliament="bundestag")
+        second = await resolve_or_create_speaker(session, "Dr. Testname", parliament="bundestag")
         await session.commit()
         assert first == second  # eine Identität
         count = await session.scalar(
