@@ -123,6 +123,10 @@ class LandtagSachsenAnhaltAdapter:
         """
         if not self._settings.enabled:
             raise LandtagStDisabled("Abruf nicht freigegeben (WORTLAUT_LANDTAG_ST_ENABLED)")
+        logger.info(
+            "landtag-st: Entdeckung über die Sitzungsnummer; since=%s wird nicht ausgewertet",
+            since.date().isoformat(),
+        )
         refs: list[SourceRef] = []
         for wp in (self._settings.wahlperiode, self._settings.wahlperiode + 1):
             refs.extend(self._refs_for(wp, await self._highest(wp)))
