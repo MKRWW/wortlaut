@@ -131,14 +131,17 @@ def _top_before(offset: int, tops: list[tuple[int, str]]) -> str | None:
     return current
 
 
-def segment_speeches(normalized: str) -> list[SpeechSegment]:
+def segment_speeches(
+    normalized: str, *, marker: re.Pattern[str] = SPEAKER_MARKER
+) -> list[SpeechSegment]:
     """Segmentiert an Redner-Markern; Präsidium ausgeschlossen (MVP).
 
     Für jeden Beitrag gilt strikt ``normalized[text_start:text_end] == verbatim_text``.
     Jeder Beitrag trägt den Tagesordnungspunkt seiner Position (#51).
+    ``marker`` erlaubt parlamentsspezifische Rednerzeilen (#145).
     """
     tops = [(m.start(), m.group(1)) for m in _TOP_HEADER.finditer(normalized)]
-    markers = list(SPEAKER_MARKER.finditer(normalized))
+    markers = list(marker.finditer(normalized))
     segments: list[SpeechSegment] = []
     for i, m in enumerate(markers):
         if m.group("pres"):

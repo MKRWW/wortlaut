@@ -255,3 +255,123 @@ async def test_write_spans_does_not_merge_with_bundestag_speaker(
             {"sid": str(source_id)},
         )
         assert span_speaker != bundestag_speaker
+
+
+class _RollenProbeAdapter:
+    """Eigenständiger Fake-Adapter (AC11): ``parse`` liefert zwei Drafts für denselben
+    Namen — einer mit Rolle, einer ohne (Parlament ``landtag-sachsen-anhalt``, Rolle ``MdL``)."""
+
+    name = "landtag-rollen-probe"
+    version = "1.0.0"
+    trust_level = "secondary"
+    parliament = "landtag-sachsen-anhalt"
+    mandate_role = "MdL"
+    rights_basis = "amtliches_werk_p5"
+
+    def normalize(self, raw: RawSource) -> str:
+        return raw.raw_bytes.decode("utf-8")
+
+    def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
+        return [
+            SpanDraft(
+                verbatim_text="Satz eins.",
+                text_start=0,
+                text_end=10,
+                speaker_hint={
+                    "name": "Karl Probe",
+                    "party": None,
+                    "role": "Minister für Finanzen",
+                },
+                spoken_at="2026-06-18",
+                locator={"sitzung": "118"},
+                permalink="https://example.org/118.pdf",
+            ),
+            SpanDraft(
+                verbatim_text="Satz zwei.",
+                text_start=11,
+                text_end=21,
+                speaker_hint={"name": "Karl Probe", "party": None},
+                spoken_at="2026-06-18",
+                locator={"sitzung": "118"},
+                permalink="https://example.org/118.pdf",
+            ),
+        ]
+
+    async def discover(self, since: datetime) -> Sequence[SourceRef]:
+        return []
+
+    async def fetch(self, ref: SourceRef) -> RawSource:
+        raise AdapterError(f"Fake-Adapter fetcht nicht: {ref.origin_url}")
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_role_per_draft_and_distinct_mandates(
+    fresh_sessions: async_sessionmaker[AsyncSession],
+    seed_attestation: SeedAttestation,
+) -> None:
+    """AC11: Rolle je Draft → Mandat mit genau dieser Rolle; dieselbe Person ohne Rolle
+    und ohne Fraktion im selben Parlament → zweites Mandat mit Rolle ``MdL``."""
+    raw_bytes = b"Satz eins. Satz zwei."
+    async with fresh_sessions() as session:
+        await session.execute(
+            text(
+                "INSERT INTO ingest_adapter (name, version, trust_level) "
+                "VALUES ('landtag-rollen-probe', '1.0.0', CAST('secondary' AS trust_level))"
+            )
+        )
+        await session.commit()
+        source_id = await insert_source(
+            session,
+            NewSource(
+                content_hash=content_hash(raw_bytes),
+                raw_bytes_ref="probe-ref",
+                archive_wayback=None,
+                archive_today=None,
+                origin_url="https://example.org/118.pdf",
+                source_type="plenarprotokoll",
+                rights_basis="amtliches_werk_p5",
+                adapter_name="landtag-rollen-probe",
+                adapter_version="1.0.0",
+                byte_size=len(raw_bytes),
+                mime_type="text/plain",
+                retrieved_at=datetime.now(UTC),
+                normalized_text="Satz eins. Satz zwei.",
+            ),
+        )
+        await seed_attestation(session, source_id)
+        await session.commit()
+        raw = RawSource(
+            origin_url="https://example.org/118.pdf",
+            source_type="plenarprotokoll",
+            raw_bytes=raw_bytes,
+            mime_type="text/plain",
+            retrieved_at=datetime.now(UTC),
+        )
+        written = await write_spans(
+            session,
+            adapter=_RollenProbeAdapter(),
+            raw=raw,
+            normalized="Satz eins. Satz zwei.",
+            source_id=source_id,
+        )
+        assert written == 2
+        result = await session.execute(
+            text(
+                "SELECT m.role FROM span s "
+                "JOIN mandate m ON m.id = s.mandate_id WHERE s.source_id = CAST(:sid AS uuid) "
+                "ORDER BY s.text_start"
+            ),
+            {"sid": str(source_id)},
+        )
+        roles = list(result.scalars().all())
+        assert roles == ["Minister für Finanzen", "MdL"]
+        distinct = await session.scalar(
+            text(
+                "SELECT count(DISTINCT s.mandate_id) FROM span s "
+                "WHERE s.source_id = CAST(:sid AS uuid)"
+            ),
+            {"sid": str(source_id)},
+        )
+        assert distinct == 2

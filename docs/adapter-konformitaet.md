@@ -91,7 +91,7 @@ wird nichts von einem Server geholt.
 | `parse` | wirft nicht; jedes Element ist ein `SpanDraft` |
 | `parse_min_spans` | `parse` liefert mindestens `min_spans` Spans |
 | `span_offsets` | `0 <= text_start < text_end <= len(normalized)` und `normalized[text_start:text_end] == verbatim_text` |
-| `span_speaker` | `speaker_hint` ist ein `dict` mit nicht-leerem `str` unter `"name"` |
+| `span_speaker` | `speaker_hint` ist ein `dict` mit nicht-leerem `str` unter `"name"`; ist `"role"` vorhanden, ein nicht-leerer `str` |
 | `span_date` | `spoken_at` ist `""` oder ein ISO-Datum (`date.fromisoformat` gelingt) |
 | `span_locator` | `locator` ist ein `dict` und `json.dumps(locator)` gelingt |
 | `span_permalink` | `permalink` ist ein nicht-leerer `str` |

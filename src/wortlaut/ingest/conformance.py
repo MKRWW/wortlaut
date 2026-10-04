@@ -240,12 +240,19 @@ def _offset_ok(draft: SpanDraft, normalized: str) -> bool:
     return 0 <= start < end <= len(normalized) and normalized[start:end] == draft.verbatim_text
 
 
+def _role_ok(hint: dict[str, object]) -> bool:
+    role = hint.get("role")
+    return isinstance(role, str) and role != ""
+
+
 def _speaker_ok(draft: SpanDraft) -> bool:
     hint = draft.speaker_hint
     if not isinstance(hint, dict):
         return False
     name = hint.get("name")
-    return isinstance(name, str) and name != ""
+    if not isinstance(name, str) or name == "":
+        return False
+    return "role" not in hint or _role_ok(hint)
 
 
 def _date_ok(draft: SpanDraft) -> bool:

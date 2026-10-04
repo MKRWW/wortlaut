@@ -44,7 +44,6 @@ async def write_spans(
         return 0
 
     verification = "official" if adapter.trust_level == "verified_primary" else "machine"
-    chamber = Chamber(parliament=adapter.parliament, role=adapter.mandate_role)
     count = 0
     for draft in drafts:
         if not draft.spoken_at:  # fail-loud: kein Datum → kein Span (nie Falsch-Datum)
@@ -53,6 +52,8 @@ async def write_spans(
         spoken = date.fromisoformat(draft.spoken_at)
         party_raw = draft.speaker_hint.get("party")
         party = str(party_raw) if party_raw else None
+        role_raw = draft.speaker_hint.get("role")
+        role = str(role_raw) if role_raw else adapter.mandate_role
         speaker_id = await resolve_or_create_speaker(
             session, str(draft.speaker_hint["name"]), parliament=adapter.parliament
         )
@@ -61,7 +62,7 @@ async def write_spans(
             speaker_id=speaker_id,
             party=party,
             active_from=spoken,
-            chamber=chamber,
+            chamber=Chamber(parliament=adapter.parliament, role=role),
         )
         span_id = await insert_span(
             session,

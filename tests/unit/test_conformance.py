@@ -239,6 +239,19 @@ class _NoSpeakerName(_GoodAdapter):
         ]
 
 
+class _EmptyRole(_GoodAdapter):
+    """Der speaker_hint enthält "role" als leeren String (AC12)."""
+
+    def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
+        return [
+            dataclasses.replace(
+                s,
+                speaker_hint={"name": "Dr. Max Mustermann", "party": "AfD", "role": ""},
+            )
+            for s in super().parse(raw, normalized)
+        ]
+
+
 class _GermanDate(_GoodAdapter):
     """spoken_at ist ein Datum im deutschen Format."""
 
@@ -344,6 +357,7 @@ _BROKEN: list[tuple[type[object], str]] = [
     (_ShiftedOffsets, "span_offsets"),
     (_WrongVerbatim, "span_offsets"),
     (_NoSpeakerName, "span_speaker"),
+    (_EmptyRole, "span_speaker"),
     (_GermanDate, "span_date"),
     (_SetLocator, "span_locator"),
     (_EmptyPermalink, "span_permalink"),

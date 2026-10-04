@@ -59,6 +59,7 @@ class SpanDraft:
     text_start: int
     text_end: int
     speaker_hint: dict[str, object]
+    # Schlüssel: "name" (Pflicht), "party" (optional), "role" (optional, #145)
     spoken_at: str
     locator: dict[str, object]
     permalink: str

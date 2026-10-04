@@ -61,10 +61,11 @@ async def resolve_or_create_mandate(
     active_from: date,
     chamber: Chamber,
 ) -> UUID:
-    """get-or-create per ``(speaker, parliament, party)``; ``party`` frei (R-CORE-03)."""
+    """get-or-create per ``(speaker, parliament, role, party)``; ``party`` frei (R-CORE-03)."""
     stmt = select(Mandate.id).where(
         Mandate.speaker_id == speaker_id,
         Mandate.parliament == chamber.parliament,
+        Mandate.role == chamber.role,
     )
     stmt = stmt.where(Mandate.party.is_(None) if party is None else Mandate.party == party)
     existing = await session.scalar(stmt)
