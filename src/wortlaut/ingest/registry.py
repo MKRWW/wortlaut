@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from wortlaut.ingest.adapter import IngestAdapter
 from wortlaut.ingest.dip import DipPlenarprotokollAdapter
+from wortlaut.ingest.landtag_st import LandtagSachsenAnhaltAdapter
 
 DEFAULT_ADAPTER = "dip-api"
 
@@ -58,6 +59,15 @@ def default_registry() -> AdapterRegistry:
             trust_level=DipPlenarprotokollAdapter.trust_level,
             rights_basis=DipPlenarprotokollAdapter.rights_basis,
             create=DipPlenarprotokollAdapter.from_env,
+        )
+    )
+    registry.register(
+        AdapterEntry(
+            name=LandtagSachsenAnhaltAdapter.name,
+            version=LandtagSachsenAnhaltAdapter.version,
+            trust_level=LandtagSachsenAnhaltAdapter.trust_level,
+            rights_basis=LandtagSachsenAnhaltAdapter.rights_basis,
+            create=LandtagSachsenAnhaltAdapter.from_env,
         )
     )
     return registry

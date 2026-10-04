@@ -10,6 +10,7 @@ import pytest
 
 from wortlaut.ingest.adapter import RawSource, SourceRef, SpanDraft
 from wortlaut.ingest.dip import DipPlenarprotokollAdapter
+from wortlaut.ingest.landtag_st import LandtagSachsenAnhaltAdapter
 from wortlaut.ingest.registry import (
     DEFAULT_ADAPTER,
     AdapterEntry,
@@ -30,6 +31,8 @@ class _ProbeAdapter:
     name = "probe"
     version = "1.0.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis: str | None = _LIZENZ
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]:
@@ -93,7 +96,7 @@ def test_default_registry_has_dip() -> None:
     des DIP-Adapters und der Fabrik ``from_env``; jeder Aufruf ist frisch
     (kein Modul-Zustand, §4.1)."""
     registry = default_registry()
-    assert registry.names() == [DEFAULT_ADAPTER]
+    assert DEFAULT_ADAPTER in registry.names()
     entry = registry.get(DEFAULT_ADAPTER)
     assert entry is not None
     assert entry.name == DipPlenarprotokollAdapter.name
@@ -130,3 +133,18 @@ def test_resolve_order(
         override=override, per_source=per_source, adapter_default=adapter_default
     )
     assert resolved == expected
+
+
+def test_default_registry_has_landtag_st() -> None:
+    """AC1: ``default_registry()`` trägt ``landtag-st`` mit den Klassenattributen des
+    Landtag-Adapters und der Fabrik ``from_env``."""
+    registry = default_registry()
+    entry = registry.get("landtag-st")
+    assert entry is not None
+    assert entry.name == LandtagSachsenAnhaltAdapter.name
+    assert entry.version == LandtagSachsenAnhaltAdapter.version
+    assert entry.trust_level == "secondary"
+    assert entry.rights_basis == "amtliches_werk_p5"
+    assert entry.create == LandtagSachsenAnhaltAdapter.from_env
+    assert LandtagSachsenAnhaltAdapter.parliament == "landtag-sachsen-anhalt"
+    assert LandtagSachsenAnhaltAdapter.mandate_role == "MdL"

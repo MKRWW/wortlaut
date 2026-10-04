@@ -75,8 +75,9 @@ wird nichts von einem Server geholt.
 
 | Prüf-ID | Was geprüft wird |
 |---|---|
-| `protocol` | alle Protocol-Mitglieder vorhanden: `name`, `version`, `trust_level`, `rights_basis`, `discover`, `fetch`, `normalize`, `parse`, `aclose` |
+| `protocol` | alle Protocol-Mitglieder vorhanden: `name`, `version`, `trust_level`, `parliament`, `mandate_role`, `rights_basis`, `discover`, `fetch`, `normalize`, `parse`, `aclose` |
 | `identity` | `name` und `version` sind nicht-leere `str`; `trust_level` ist ein Wert aus `TRUST_LEVELS` |
+| `parliament` | `parliament` ist ein Kurzname (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, z. B. `landtag-brandenburg`); `mandate_role` ist ein nicht-leerer `str` (z. B. `MdL`) |
 | `rights_basis` | `rights_basis` ist `None` oder ein Wert aus `RIGHTS_BASES` |
 | `discover` | wirft nicht; Ergebnis ist eine `Sequence` von `SourceRef` (leere Sequenz ist erlaubt) |
 | `ref_rights` | je Ref eine auflösbare Rechtsgrundlage (Ref-Angabe, sonst Adapter-Default) in `RIGHTS_BASES` |
@@ -90,7 +91,7 @@ wird nichts von einem Server geholt.
 | `parse` | wirft nicht; jedes Element ist ein `SpanDraft` |
 | `parse_min_spans` | `parse` liefert mindestens `min_spans` Spans |
 | `span_offsets` | `0 <= text_start < text_end <= len(normalized)` und `normalized[text_start:text_end] == verbatim_text` |
-| `span_speaker` | `speaker_hint` ist ein `dict` mit nicht-leerem `str` unter `"name"` |
+| `span_speaker` | `speaker_hint` ist ein `dict` mit nicht-leerem `str` unter `"name"`; ist `"role"` vorhanden, ein nicht-leerer `str` |
 | `span_date` | `spoken_at` ist `""` oder ein ISO-Datum (`date.fromisoformat` gelingt) |
 | `span_locator` | `locator` ist ein `dict` und `json.dumps(locator)` gelingt |
 | `span_permalink` | `permalink` ist ein nicht-leerer `str` |

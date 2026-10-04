@@ -29,6 +29,8 @@ _AMTLICHES = "amtliches_werk_p5"
 class _RegistryFake:
     version = "2.0.0"
     trust_level = "secondary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
 
     def __init__(self, name: str, rights_basis: str | None, refs: list[SourceRef]) -> None:
         self.name = name
@@ -206,6 +208,8 @@ class _NoRightsAdapter:
     name = DEFAULT_ADAPTER
     version = "2.0.0"
     trust_level = "secondary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
 
     def __init__(self, refs: list[SourceRef]) -> None:
         self.refs = refs

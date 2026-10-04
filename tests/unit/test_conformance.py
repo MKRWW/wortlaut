@@ -31,6 +31,8 @@ class _GoodAdapter:
     name = "gut"
     version = "1.0.0"
     trust_level = "secondary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis: str | None = "lizenz"
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]:
@@ -237,6 +239,19 @@ class _NoSpeakerName(_GoodAdapter):
         ]
 
 
+class _EmptyRole(_GoodAdapter):
+    """Der speaker_hint enthält "role" als leeren String (AC12)."""
+
+    def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
+        return [
+            dataclasses.replace(
+                s,
+                speaker_hint={"name": "Dr. Max Mustermann", "party": "AfD", "role": ""},
+            )
+            for s in super().parse(raw, normalized)
+        ]
+
+
 class _GermanDate(_GoodAdapter):
     """spoken_at ist ein Datum im deutschen Format."""
 
@@ -281,11 +296,46 @@ class _WithoutAclose:
     name = "gut"
     version = "1.0.0"
     trust_level = "secondary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis: str | None = "lizenz"
     discover = _GoodAdapter.discover
     fetch = _GoodAdapter.fetch
     normalize = _GoodAdapter.normalize
     parse = _GoodAdapter.parse
+
+
+class _BadParliamentSpaces(_GoodAdapter):
+    """parliament enthält Leerzeichen."""
+
+    parliament = "Landtag Brandenburg"
+
+
+class _EmptyParliament(_GoodAdapter):
+    """parliament ist leer."""
+
+    parliament = ""
+
+
+class _EmptyMandateRole(_GoodAdapter):
+    """mandate_role ist leer."""
+
+    mandate_role = ""
+
+
+class _WithoutParliamentAttr:
+    """Adapter ohne parliament-Attribut."""
+
+    name = "gut"
+    version = "1.0.0"
+    trust_level = "secondary"
+    mandate_role = "MdB"
+    rights_basis: str | None = "lizenz"
+    discover = _GoodAdapter.discover
+    fetch = _GoodAdapter.fetch
+    normalize = _GoodAdapter.normalize
+    parse = _GoodAdapter.parse
+    aclose = _GoodAdapter.aclose
 
 
 _BROKEN: list[tuple[type[object], str]] = [
@@ -307,11 +357,16 @@ _BROKEN: list[tuple[type[object], str]] = [
     (_ShiftedOffsets, "span_offsets"),
     (_WrongVerbatim, "span_offsets"),
     (_NoSpeakerName, "span_speaker"),
+    (_EmptyRole, "span_speaker"),
     (_GermanDate, "span_date"),
     (_SetLocator, "span_locator"),
     (_EmptyPermalink, "span_permalink"),
     (_AcloseRaisesSecondTime, "aclose"),
     (_WithoutAclose, "protocol"),
+    (_BadParliamentSpaces, "parliament"),
+    (_EmptyParliament, "parliament"),
+    (_EmptyMandateRole, "parliament"),
+    (_WithoutParliamentAttr, "protocol"),
 ]
 
 

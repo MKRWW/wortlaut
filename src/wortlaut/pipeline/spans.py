@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from wortlaut.evidence.hashing import span_hash
 from wortlaut.ingest.adapter import IngestAdapter, RawSource
 from wortlaut.store.spans import (
+    Chamber,
     NewSpan,
     init_span_state,
     insert_span,
@@ -25,8 +26,6 @@ from wortlaut.store.spans import (
 )
 
 logger = logging.getLogger(__name__)
-
-_PARLIAMENT = "bundestag"  # MVP: DIP-Bundestag; Landtage später
 
 
 async def write_spans(
@@ -53,13 +52,17 @@ async def write_spans(
         spoken = date.fromisoformat(draft.spoken_at)
         party_raw = draft.speaker_hint.get("party")
         party = str(party_raw) if party_raw else None
-        speaker_id = await resolve_or_create_speaker(session, str(draft.speaker_hint["name"]))
+        role_raw = draft.speaker_hint.get("role")
+        role = str(role_raw) if role_raw else adapter.mandate_role
+        speaker_id = await resolve_or_create_speaker(
+            session, str(draft.speaker_hint["name"]), parliament=adapter.parliament
+        )
         mandate_id = await resolve_or_create_mandate(
             session,
             speaker_id=speaker_id,
             party=party,
             active_from=spoken,
-            parliament=_PARLIAMENT,
+            chamber=Chamber(parliament=adapter.parliament, role=role),
         )
         span_id = await insert_span(
             session,
