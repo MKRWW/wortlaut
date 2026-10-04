@@ -66,15 +66,21 @@ async def resolve_or_create_speaker(
     external_ids: dict[str, object] | None = None,
 ) -> UUID: ...
 
+@dataclass(frozen=True)
+class Chamber:
+    """Parlament und Rolle eines Mandats (#143)."""
+
+    parliament: str
+    role: str
+
 async def resolve_or_create_mandate(
     session: AsyncSession,
     *,
     speaker_id: UUID,
     party: str | None,
     active_from: date,
-    parliament: str,
-    role: str,
-) -> UUID: ...
+    chamber: Chamber,
+) -> UUID: ...  # höchstens 5 Parameter (ruff PLR0913)
 
 # src/wortlaut/ingest/conformance.py
 PARLIAMENT_RE: re.Pattern[str]  # ^[a-z0-9]+(?:-[a-z0-9]+)*$
@@ -176,13 +182,14 @@ existing = await session.scalar(stmt)
   Rest (Anlegen) unverändert. Docstring: „get-or-create per ``full_name`` je Parlament: wieder-
   verwendet wird nur ein Sprecher mit Mandat in ``parliament`` oder ganz ohne Mandat (#143).“
   Imports: `exists`, `or_` aus `sqlalchemy`.
-- `resolve_or_create_mandate`: neuer Keyword-Parameter `role: str` (Signatur §3), beim Anlegen
-  `role=role`.
+- `resolve_or_create_mandate`: `parliament: str` ersetzt durch `chamber: Chamber` (Signatur §3);
+  Suche und Anlegen nutzen `chamber.parliament` und `chamber.role`.
 
 ### `src/wortlaut/pipeline/spans.py`
 `_PARLIAMENT` samt Kommentar löschen. In `write_spans`:
 `resolve_or_create_speaker(session, str(draft.speaker_hint["name"]), parliament=adapter.parliament)`
-und in `resolve_or_create_mandate(...)` `parliament=adapter.parliament, role=adapter.mandate_role`.
+und in `resolve_or_create_mandate(...)` `chamber=chamber`, wobei vor der Schleife einmal
+`chamber = Chamber(parliament=adapter.parliament, role=adapter.mandate_role)` gebildet wird.
 
 ### `src/wortlaut/ingest/conformance.py`
 `PARLIAMENT_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")` neben `_MIME_RE` (öffentlich, ohne
@@ -240,6 +247,14 @@ Marker `pytestmark = pytest.mark.integration`. Fixtures wie in `test_span_ingest
   ohne Mandat → gleiche id; `SELECT count(*) FROM speaker WHERE full_name = ...` == 1.
 - `test_bundestag_speaker_reused` (AC5): Sprecher + Mandat `bundestag`; Aufruf mit `bundestag` →
   gleiche id.
+- Mandate in den Tests über `chamber=Chamber(parliament=..., role=...)` anlegen.
+- `test_write_spans_does_not_merge_with_bundestag_speaker` (AC3 über `write_spans`): vorher Sprecher
+  „Dr. Gleichname“ mit Mandat `bundestag`/`MdB` anlegen, dann denselben Ablauf wie im AC2-Test;
+  `SELECT s.speaker_id FROM span s WHERE s.source_id = ...` ist **nicht** die id des
+  Bundestag-Sprechers.
+- `test_write_spans_uses_adapter_parliament` (AC2): Fixture `seed_attestation` (conftest) — nach
+  `insert_source` `await seed_attestation(session, source_id)` und commit, denn Spans sind nur auf
+  attestierten Quellen erlaubt (DB-Trigger, ADR-0009).
 - `test_write_spans_uses_adapter_parliament` (AC2): Ein Fake-Adapter (eigenständige Klasse) mit
   `name = "landtag-probe"`, `parliament = "landtag-brandenburg"`, `mandate_role = "MdL"`,
   `trust_level = "secondary"`, `rights_basis = "amtliches_werk_p5"`; `normalize` dekodiert UTF-8,

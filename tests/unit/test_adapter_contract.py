@@ -28,6 +28,8 @@ class _WithoutAclose:
     name = "probe"
     version = "1.0.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis = "lizenz"
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]:
@@ -54,6 +56,8 @@ class _WithoutRightsBasis:
     name = "probe"
     version = "1.0.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
 
     async def discover(self, since: datetime) -> Sequence[SourceRef]:
         return []
@@ -147,3 +151,37 @@ def test_cli_catches_only_adapter_error() -> None:
     ]
     assert "DipFetchError" not in caught
     assert "ValueError" not in caught
+
+
+class _WithoutParliament:
+    """Probe: erfüllt das Protocol bis auf ``parliament``."""
+
+    name = "probe"
+    version = "1.0.0"
+    trust_level = "verified_primary"
+    rights_basis = "lizenz"
+    mandate_role = "MdB"
+
+    async def discover(self, since: datetime) -> Sequence[SourceRef]:
+        return []
+
+    async def fetch(self, ref: SourceRef) -> RawSource:
+        raise AssertionError("not used")
+
+    def normalize(self, raw: RawSource) -> str:
+        return ""
+
+    def parse(self, raw: RawSource, normalized: str) -> Sequence[SpanDraft]:
+        return []
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_protocol_declares_parliament() -> None:
+    """(#143) ``IngestAdapter`` deklariert ``parliament`` und ``mandate_role``;
+    der DIP-Adapter nennt ``bundestag`` und ``MdB``."""
+    without = _WithoutParliament()
+    assert isinstance(without, IngestAdapter) is False
+    assert DipPlenarprotokollAdapter.parliament == "bundestag"
+    assert DipPlenarprotokollAdapter.mandate_role == "MdB"

@@ -41,6 +41,8 @@ class DipPlenarprotokollAdapter:
     name = "dip-api"
     version = "1.0.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     # Plenarprotokolle: amtliches Werk, § 5 UrhG (docs/legal.md §2).
     rights_basis = "amtliches_werk_p5"
 

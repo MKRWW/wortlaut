@@ -5,6 +5,8 @@ jede Quell-Adapter-Implementierung erfüllen muss.
 
 Der Adapter deklariert die Rechtsgrundlage seiner Quellen (``rights_basis``, #97).
 
+Der Adapter nennt sein Parlament und die Rolle seiner Redner (#143).
+
 Adapter melden Fehler, mit denen sie eine Quelle (oder die Entdeckung)
 gerade nicht liefern, als ``AdapterError`` (oder einer Unterklasse).
 
@@ -73,6 +75,8 @@ class IngestAdapter(Protocol):
     name: str
     version: str
     trust_level: str  # 'verified_primary' | 'secondary' | 'low'
+    parliament: str  # stabiler Kurzname, z. B. 'bundestag', 'landtag-brandenburg'
+    mandate_role: str  # Rolle der Redner, z. B. 'MdB', 'MdL'
 
     @property
     def rights_basis(self) -> str | None:

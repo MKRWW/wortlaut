@@ -28,6 +28,8 @@ class FakeAdapter:
     name = "fake"
     version = "1.0"
     trust_level = "verified_primary"
+    parliament = "bundestag"
+    mandate_role = "MdB"
     rights_basis = "amtliches_werk_p5"
 
     def __init__(self) -> None:
