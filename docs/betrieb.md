@@ -17,7 +17,7 @@
 >
 > Offene Punkte sind als `> TODO:` markiert — nicht mit Vermutungen gefüllt.
 
-Stand: 2026-10-03 (Image `d700dab`, Migration `0008`, 9 Quellen).
+Stand: 2026-10-03 (Image `d700dab`, Migration `0008`, 9 Quellen, Sicherung aktiv).
 
 ---
 
@@ -186,7 +186,29 @@ Handgriff für nebenbei.
 |---|---|
 | Lese-API | `$C logs --since 1h api` |
 | Erfassungs-Läufe | `$LOGS/*.log` (je Lauf ein Abschnitt mit Start, Ausgabe, `EXIT=`, Ende) |
+| Sicherung und Restore-Test | `$LOGS/backup.log` |
 | Ausgerollte Versionen | die `compose.yaml.bak-…`-Dateien in `$STACK` |
+
+### Sicherung
+
+Seit 2026-10-03 läuft eine automatische Sicherung (systemd-Timer):
+
+- **Täglich**, und nur bei entsperrtem Volume — vor dem Entsperren nach einem Neustart wird der
+  Lauf übersprungen, statt einen leeren Bestand zu sichern.
+- **Gesichert:** ein logischer Datenbank-Dump, die WORM-Objekte **dateibasiert samt Versionen**
+  (die gespeicherten Fundstellen `raw_bytes_ref` hängen an den Version-IDs) und die
+  Betriebskonfiguration. **Nicht** gesichert: der Header des verschlüsselten Volumes.
+- **Verschlüsselt, bevor die Daten den Server verlassen** (restic), Ablage off-site bei einem
+  externen Speicheranbieter. Der Anbieter sieht nur Chiffrat.
+- **Geprüft:** nach jedem Lauf `restic check`; einmal im Monat ein **Restore-Test**, der eine
+  Wegwerf-Datenbank und einen Test-Bucket sichert, zurückholt und bitgenau vergleicht.
+  Ein Backup, dessen Wiederherstellung nicht geprüft wird, zählt nicht.
+- Der Datenbank-Dump läuft aus einem frischen Einmal-Container (siehe §5, `docker exec` geht nicht).
+
+Zielort, Zugang und Repo-Passwort stehen im internen Betriebsdokument.
+
+> TODO: Den Ablauf einer **echten** Wiederherstellung (nicht nur des Tests) aufschreiben — auf
+> einem frischen Server, Schritt für Schritt.
 
 ---
 
@@ -277,10 +299,9 @@ Nur Namen und Bedeutung — **nie Werte**. Die Werte stehen in der Konfiguration
 
 ## 8. Offene Fragen
 
-> TODO: **Sicherungen.** Es gibt heute keine dokumentierte Sicherung von Datenbank und
-> WORM-Speicher. Was gesichert wird, wohin, wie oft, und wie eine Wiederherstellung geprüft wird.
-
-> TODO: **Überwachung.** Niemand wird benachrichtigt, wenn die API steht oder ein Lauf scheitert.
+> TODO: **Überwachung.** Niemand wird benachrichtigt, wenn die API steht oder ein Lauf scheitert —
+> auch nicht, wenn die Sicherung oder der Restore-Test fehlschlägt. Geplant: Benachrichtigung per
+> Mail über den Webserver des Projekts.
 
 > TODO: **Regelmäßige Läufe.** Alle Erfassungs-Läufe werden heute von Hand angestoßen. Wann,
 > wie oft und von wem, ist nicht festgelegt.
